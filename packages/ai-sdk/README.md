@@ -36,3 +36,32 @@ const result = await generateText({
   providerOptions: { caesura: { conversationId: sessionId } },
 });
 ```
+
+## Credit Usage Reporting
+
+You can request credit-usage metadata on every analyze call and receive the reported value via the `onCreditUsage` callback.
+
+```ts
+import { caesuraMiddleware, createCreditMeter } from '@caesura/ai-sdk';
+
+// 1. Create a credit meter to accumulate and query metrics
+const meter = createCreditMeter();
+
+const model = wrapLanguageModel({
+  model,
+  middleware: caesuraMiddleware({
+    baseUrl: 'https://dev.caesura.io',
+    // Supply the callback to opt-in to credit-usage reporting
+    onCreditUsage: meter.record,
+  }),
+});
+
+// 2. Query credit metrics later
+console.log('total credits consumed:', meter.total());
+console.log('credits by conversation:', meter.breakdown());
+console.log('retained credit events:', meter.events());
+```
+
+> [!NOTE]
+> In `async` mode, the `onCreditUsage` callback fires out-of-band as soon as the asynchronous analyze call completes, decoupled from the synchronous `generateText` response.
+

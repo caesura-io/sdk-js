@@ -18,6 +18,11 @@ export interface AnalyzeRequestBody {
   similarityThreshold?: number;
 }
 
+export interface AnalyzeResult {
+  analysis: CaesuraAnalysis;
+  creditUsage?: number;
+}
+
 export class CaesuraClient {
   constructor(
     private readonly baseUrl: string,
@@ -25,11 +30,12 @@ export class CaesuraClient {
     private readonly timeoutMs: number,
   ) {}
 
-  /** Calls the analyze endpoint. Returns the open-shaped analysis object. */
+  /** Calls the analyze endpoint. Returns the analysis and optional credit usage. */
   async analyze(
     body: AnalyzeRequestBody,
+    opts?: { includeCreditUsage?: boolean },
     externalSignal?: AbortSignal,
-  ): Promise<CaesuraAnalysis> {
+  ): Promise<AnalyzeResult> {
     const ctrl = new AbortController();
     const onAbort = () => ctrl.abort();
     if (externalSignal) {
@@ -44,6 +50,7 @@ export class CaesuraClient {
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${this.apiKey}`,
+          ...(opts?.includeCreditUsage ? { 'x-include-credit-usage': 'true' } : {}),
         },
         body: JSON.stringify(body),
         signal: ctrl.signal,
@@ -53,7 +60,13 @@ export class CaesuraClient {
         const text = await res.text().catch(() => '');
         throw new Error(`Caesura analyze ${res.status}: ${text}`);
       }
-      return (await res.json()) as CaesuraAnalysis;
+      const analysis = (await res.json()) as CaesuraAnalysis;
+      const raw = res.headers.get('x-credit-usage');
+      const creditUsage = raw != null ? Number(raw) : undefined;
+      return {
+        analysis,
+        creditUsage: creditUsage != null && Number.isFinite(creditUsage) ? creditUsage : undefined,
+      };
     } finally {
       clearTimeout(timer);
       if (externalSignal) externalSignal.removeEventListener('abort', onAbort);

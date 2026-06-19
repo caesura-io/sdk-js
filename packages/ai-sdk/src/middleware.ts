@@ -57,6 +57,8 @@ function resolveConfig(user: CaesuraConfig): ResolvedConfig {
     },
     timeoutMs: user.timeoutMs ?? 8000,
     onError: user.onError ?? ((e) => console.error('[caesura]', e)),
+    includeCreditUsage: !!user.onCreditUsage,
+    onCreditUsage: user.onCreditUsage,
   };
 }
 
@@ -112,25 +114,45 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
         const queryTurn = state.turn;
         try {
           const messages = buildAnalyzeMessages(collected, state);
-          const analysis: CaesuraAnalysis = await client.analyze({
-            ...(cfg.persist ? { conversationId: convId, sessionId: convId } : {}),
-            callType: cfg.callType,
-            messages,
-            persist: cfg.persist,
-            calculateSimilarities: cfg.calculateSimilarities,
-            similarityThreshold: cfg.similarityThreshold,
-          });
+          const { analysis, creditUsage } = await client.analyze(
+            {
+              ...(cfg.persist ? { conversationId: convId, sessionId: convId } : {}),
+              callType: cfg.callType,
+              messages,
+              persist: cfg.persist,
+              calculateSimilarities: cfg.calculateSimilarities,
+              similarityThreshold: cfg.similarityThreshold,
+            },
+            { includeCreditUsage: cfg.includeCreditUsage },
+          );
+
+          let rec: StoredRecommendation | undefined;
 
           // isSame (or no recommendation) -> add nothing; prior stays in context.
-          if (analysis.isSame || !analysis.recommendation) return;
+          if (!analysis.isSame && analysis.recommendation) {
+            rec = {
+              id: nextId(),
+              analysis,
+              createdAtMs: Date.now(),
+              createdAtTurn: queryTurn,
+            };
+            store.add(convId, [rec]);
+          }
 
-          const rec: StoredRecommendation = {
-            id: nextId(),
-            analysis,
-            createdAtMs: Date.now(),
-            createdAtTurn: queryTurn,
-          };
-          store.add(convId, [rec]);
+          if (creditUsage != null && cfg.onCreditUsage) {
+            try {
+              cfg.onCreditUsage({
+                credits: creditUsage,
+                conversationId: convId,
+                queryTurn,
+                recommendationId: rec?.id,
+                isSame: analysis.isSame,
+                timestampMs: Date.now(),
+              });
+            } catch (e) {
+              cfg.onError(e);
+            }
+          }
         } catch (e) {
           cfg.onError(e);
         } finally {

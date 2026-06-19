@@ -87,6 +87,21 @@ export interface InjectConfig {
   skillPrompt?: string;
 }
 
+export interface CreditUsageInfo {
+  /** Credits consumed by this analyze call. */
+  credits: number;
+  /** Conversation this call belonged to (store key), if any. */
+  conversationId?: string;
+  /** The turn index at which the observe call was fired. */
+  queryTurn: number;
+  /** The SDK recommendation id produced by this call, if any. */
+  recommendationId?: string;
+  /** Whether the backend deduped (isSame). */
+  isSame?: boolean;
+  /** When the analyze call resolved. */
+  timestampMs: number;
+}
+
 /** Top-level SDK configuration. Almost everything is optional. */
 export interface CaesuraConfig {
   /** API key. Falls back to process.env.CAESURA_API_KEY if omitted. */
@@ -136,6 +151,13 @@ export interface CaesuraConfig {
 
   /** Error hook for observability. Default: console.error. */
   onError?: (err: unknown) => void;
+
+  /**
+   * If provided, the SDK requests credit-usage metadata on every analyze
+   * call and invokes this with the reported value. Presence of this callback
+   * is what opts you in; omit it and no credit header is requested.
+   */
+  onCreditUsage?: (info: CreditUsageInfo) => void;
 }
 
 /** Internal: fully-resolved config with defaults applied. */
@@ -154,4 +176,6 @@ export interface ResolvedConfig {
   inject: Required<Omit<InjectConfig, 'skillPrompt'>> & Pick<InjectConfig, 'skillPrompt'>;
   timeoutMs: number;
   onError: (err: unknown) => void;
+  includeCreditUsage: boolean;
+  onCreditUsage?: (info: CreditUsageInfo) => void;
 }
