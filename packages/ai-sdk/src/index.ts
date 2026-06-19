@@ -1,6 +1,7 @@
 export { caesuraMiddleware } from './middleware.js';
 export { CaesuraClient } from './client.js';
 export { MemoryCaesuraStore } from './store.js';
+export { DEFAULT_TEMPLATE, DEFAULT_SKILL_PROMPT } from './defaults.js';
 export type {
   CaesuraStore,
   ConversationState,

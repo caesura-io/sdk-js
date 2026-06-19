@@ -8,7 +8,9 @@ import {
   injectBlock,
   renderBlock,
   selectActive,
+  applySkillPrompt,
 } from './helpers.js';
+import { DEFAULT_SKILL_PROMPT, DEFAULT_TEMPLATE } from './defaults.js';
 
 let _idSeq = 0;
 const nextId = (): string => `caesura-${Date.now()}-${_idSeq++}`;
@@ -50,8 +52,8 @@ function resolveConfig(user: CaesuraConfig): ResolvedConfig {
       as: user.inject?.as ?? 'user',
       keepLast: user.inject?.keepLast ?? 'all',
       ttl: user.inject?.ttl ?? { type: 'none' },
-      template: user.inject?.template ?? 'New recommendation:\n{analysis.recommendation}',
-      skillPrompt: user.inject?.skillPrompt,
+      template: user.inject?.template ?? DEFAULT_TEMPLATE,
+      skillPrompt: user.inject?.skillPrompt ?? DEFAULT_SKILL_PROMPT,
     },
     timeoutMs: user.timeoutMs ?? 8000,
     onError: user.onError ?? ((e) => console.error('[caesura]', e)),
@@ -75,6 +77,7 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
     specificationVersion: 'v3' as any,
     transformParams: async ({ params }) => {
       const prompt = (params.prompt ?? []) as unknown as PromptMessageLike[];
+      let modifiedPrompt = applySkillPrompt(prompt, cfg.inject.skillPrompt);
 
       const convId =
         ((params.providerOptions as Record<string, Record<string, unknown>> | undefined)
@@ -145,21 +148,22 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
 
       // ── 2. INJECT ──────────────────────────────────────────────
       const active = selectActive(state, cfg.inject, now);
-      if (active.length === 0) return params;
+      if (active.length > 0) {
+        const block = renderBlock(active, cfg.inject);
+        if (block.trim() !== '') {
+          // record the rendered block so the NEXT turn can exclude it on collect.
+          for (const r of active) {
+            r.injectedText = block;
+          }
 
-      const block = renderBlock(active, cfg.inject);
-      if (block.trim() === '') return params;
+          const lastAnalyzedText =
+            collected.length > 0 ? collected[collected.length - 1]!.text : undefined;
 
-      // record the rendered block so the NEXT turn can exclude it on collect.
-      for (const r of active) {
-        r.injectedText = block;
+          modifiedPrompt = injectBlock(modifiedPrompt, block, cfg.inject, lastAnalyzedText);
+        }
       }
 
-      const lastAnalyzedText =
-        collected.length > 0 ? collected[collected.length - 1]!.text : undefined;
-
-      const newPrompt = injectBlock(prompt, block, cfg.inject, lastAnalyzedText);
-      return { ...params, prompt: newPrompt as typeof params.prompt };
+      return { ...params, prompt: modifiedPrompt as typeof params.prompt };
     },
   };
 }

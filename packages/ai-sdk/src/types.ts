@@ -7,7 +7,7 @@ export type CaesuraMode = 'async' | 'sync';
 export type Placement = 'after-last-analyzed' | 'end';
 
 /** Which role the injected recommendation message uses. */
-export type InjectAs = 'user' | 'system' | 'assistant';
+export type InjectAs = 'user' | 'system' | 'assistant' | 'developer';
 
 /**
  * The analysis object returned by the Caesura backend.

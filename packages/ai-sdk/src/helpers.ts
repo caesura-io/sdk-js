@@ -141,17 +141,15 @@ function stringifyValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** Render the full injection block (skillPrompt + rendered active analyses). */
+/** Render the full injection block (rendered active analyses). */
 export function renderBlock(
   recs: StoredRecommendation[],
   inject: Required<Omit<InjectConfig, 'skillPrompt'>> & { skillPrompt?: string },
 ): string {
-  const body = recs
+  return recs
     .map((r) => renderAnalysis(r.analysis, inject.template))
     .filter((s) => s.trim() !== '')
     .join('\n\n');
-  if (body.trim() === '') return '';
-  return inject.skillPrompt ? `${inject.skillPrompt}\n\n${body}` : body;
 }
 
 /**
@@ -184,4 +182,49 @@ export function injectBlock(
   }
   // No match -> fall back to end.
   return [...prompt, msg];
+}
+
+/**
+ * Appends the skillPrompt to the system prompt (if present) or prepends a new
+ * system message (if absent). Skips if skillPrompt is empty or already present.
+ */
+export function applySkillPrompt(
+  prompt: PromptMessageLike[],
+  skillPrompt: string | undefined,
+): PromptMessageLike[] {
+  if (!skillPrompt || skillPrompt.trim() === '') {
+    return prompt;
+  }
+
+  const sysIndex = prompt.findIndex((m) => m.role === 'system');
+
+  if (sysIndex !== -1) {
+    const sysMsg = prompt[sysIndex]!;
+    const currentContent = sysMsg.content;
+
+    const currentText = messageText(currentContent);
+    if (currentText.includes(skillPrompt)) {
+      return prompt;
+    }
+
+    const newContent =
+      typeof currentContent === 'string'
+        ? `${currentContent}\n\n${skillPrompt}`
+        : [...(Array.isArray(currentContent) ? currentContent : []), { type: 'text', text: `\n\n${skillPrompt}` }];
+
+    const newSysMsg: PromptMessageLike = {
+      ...sysMsg,
+      content: newContent as PromptMessageLike['content'],
+    };
+
+    const newPrompt = [...prompt];
+    newPrompt[sysIndex] = newSysMsg;
+    return newPrompt;
+  } else {
+    const newSysMsg: PromptMessageLike = {
+      role: 'system',
+      content: [{ type: 'text', text: skillPrompt }],
+    };
+    return [newSysMsg, ...prompt];
+  }
 }

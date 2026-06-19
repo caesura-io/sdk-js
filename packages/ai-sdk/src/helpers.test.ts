@@ -5,6 +5,8 @@ import {
   selectActive,
   injectBlock,
   messageText,
+  renderBlock,
+  applySkillPrompt,
 } from './helpers.js';
 import type { ConversationState } from './store.js';
 import type { PromptMessageLike } from './internal/ai-types.js';
@@ -187,6 +189,79 @@ describe('helpers', () => {
       expect(messageText(injected[1]!.content)).toBe('second message');
       expect(injected[2]!.content[0]!.text).toBe('rec');
       expect(messageText(injected[3]!.content)).toBe('third message');
+    });
+  });
+
+  describe('renderBlock', () => {
+    it('concatenates recommendations without prepending skillPrompt', () => {
+      const recs = [
+        { id: '1', analysis: { recommendation: 'Rec A' }, createdAtMs: 1000, createdAtTurn: 1 },
+        { id: '2', analysis: { recommendation: 'Rec B' }, createdAtMs: 2000, createdAtTurn: 2 },
+      ];
+      const block = renderBlock(recs, {
+        template: 'Rec: {analysis.recommendation}',
+        skillPrompt: 'Should be ignored in renderBlock',
+        placement: 'end',
+        as: 'user',
+        keepLast: 'all',
+        ttl: { type: 'none' },
+      });
+      expect(block).toBe('Rec: Rec A\n\nRec: Rec B');
+    });
+  });
+
+  describe('applySkillPrompt', () => {
+    it('returns unmodified prompt if skillPrompt is empty', () => {
+      const prompt: PromptMessageLike[] = [{ role: 'user', content: 'hello' }];
+      expect(applySkillPrompt(prompt, undefined)).toBe(prompt);
+      expect(applySkillPrompt(prompt, '')).toBe(prompt);
+      expect(applySkillPrompt(prompt, '   ')).toBe(prompt);
+    });
+
+    it('appends skillPrompt to existing system prompt string content', () => {
+      const prompt: PromptMessageLike[] = [
+        { role: 'system', content: 'System instruction' },
+        { role: 'user', content: 'hello' },
+      ];
+      const res = applySkillPrompt(prompt, 'Skill prompt');
+      expect(res).toHaveLength(2);
+      expect(res[0]!.content).toBe('System instruction\n\nSkill prompt');
+    });
+
+    it('appends skillPrompt to existing system prompt array content', () => {
+      const prompt: PromptMessageLike[] = [
+        { role: 'system', content: [{ type: 'text', text: 'System instruction' }] },
+        { role: 'user', content: 'hello' },
+      ];
+      const res = applySkillPrompt(prompt, 'Skill prompt');
+      expect(res).toHaveLength(2);
+      expect(Array.isArray(res[0]!.content)).toBe(true);
+      expect(res[0]!.content).toEqual([
+        { type: 'text', text: 'System instruction' },
+        { type: 'text', text: '\n\nSkill prompt' },
+      ]);
+    });
+
+    it('skips appending if skillPrompt is already present', () => {
+      const prompt: PromptMessageLike[] = [
+        { role: 'system', content: 'System instruction\n\nSkill prompt' },
+        { role: 'user', content: 'hello' },
+      ];
+      const res = applySkillPrompt(prompt, 'Skill prompt');
+      expect(res).toBe(prompt);
+    });
+
+    it('prepends a new system prompt if absent', () => {
+      const prompt: PromptMessageLike[] = [
+        { role: 'user', content: 'hello' },
+      ];
+      const res = applySkillPrompt(prompt, 'Skill prompt');
+      expect(res).toHaveLength(2);
+      expect(res[0]).toEqual({
+        role: 'system',
+        content: [{ type: 'text', text: 'Skill prompt' }],
+      });
+      expect(res[1]).toEqual({ role: 'user', content: 'hello' });
     });
   });
 });
