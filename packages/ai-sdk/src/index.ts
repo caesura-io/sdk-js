@@ -2,6 +2,7 @@ export { caesuraMiddleware } from './middleware.js';
 export { CaesuraClient } from './client.js';
 export { MemoryCaesuraStore } from './store.js';
 export { createCreditMeter } from './meter.js';
+export { createDebugLogger } from './logger.js';
 export { DEFAULT_TEMPLATE, DEFAULT_SKILL_PROMPT } from './defaults.js';
 export type {
   CaesuraStore,
@@ -11,6 +12,7 @@ export type {
 } from './store.js';
 export type { AnalyzeMessage, AnalyzeRequestBody, AnalyzeResult } from './client.js';
 export type { CreditMeter, CreditMeterOptions } from './meter.js';
+export type { DebugLoggerOptions } from './logger.js';
 export type {
   CaesuraConfig,
   CaesuraAnalysis,
@@ -23,4 +25,5 @@ export type {
   InjectConfig,
   TtlPolicy,
   CreditUsageInfo,
+  CaesuraEvent,
 } from './types.js';

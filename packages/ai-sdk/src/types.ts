@@ -1,4 +1,5 @@
 import type { CaesuraStore } from './store.js';
+import type { AnalyzeRequestBody } from './client.js';
 
 /** Whether recommendation generation blocks the model call. */
 export type CaesuraMode = 'async' | 'sync';
@@ -158,7 +159,64 @@ export interface CaesuraConfig {
    * is what opts you in; omit it and no credit header is requested.
    */
   onCreditUsage?: (info: CreditUsageInfo) => void;
+
+  /** Structured lifecycle events for debugging/observability. */
+  onEvent?: (event: CaesuraEvent) => void;
 }
+
+export type CaesuraEvent =
+  | {
+      type: 'request';
+      conversationId: string;
+      queryTurn: number;
+      /** Exactly what was sent to the backend. */
+      body: AnalyzeRequestBody;
+      includeCreditUsage: boolean;
+    }
+  | {
+      type: 'response';
+      conversationId: string;
+      queryTurn: number;
+      /** The full analysis object returned (open shape). */
+      analysis: CaesuraAnalysis;
+      creditUsage?: number;
+      /** Wall-clock duration of the analyze call. */
+      durationMs: number;
+    }
+  | {
+      type: 'skipped';
+      conversationId: string;
+      turn: number;
+      /** Why no backend call happened this turn. */
+      reason: 'cadence-turns' | 'cadence-seconds' | 'in-flight' | 'no-messages';
+    }
+  | {
+      type: 'buffered';
+      conversationId: string;
+      queryTurn: number;
+      recommendationId: string;
+    }
+  | {
+      type: 'deduped';
+      conversationId: string;
+      queryTurn: number;
+      /** isSame / empty recommendation -> nothing buffered. */
+    }
+  | {
+      type: 'injected';
+      conversationId: string;
+      turn: number;
+      /** The exact text spliced into the prompt. */
+      text: string;
+      /** How many recommendations were active in the block. */
+      count: number;
+      placement: Placement;
+    }
+  | {
+      type: 'error';
+      conversationId: string;
+      error: unknown;
+    };
 
 /** Internal: fully-resolved config with defaults applied. */
 export interface ResolvedConfig {
@@ -178,4 +236,5 @@ export interface ResolvedConfig {
   onError: (err: unknown) => void;
   includeCreditUsage: boolean;
   onCreditUsage?: (info: CreditUsageInfo) => void;
+  onEvent?: (event: CaesuraEvent) => void;
 }

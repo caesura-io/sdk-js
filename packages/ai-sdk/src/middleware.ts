@@ -1,7 +1,7 @@
 import type { CaesuraMiddleware, PromptMessageLike } from './internal/ai-types.js';
-import { CaesuraClient } from './client.js';
+import { CaesuraClient, type AnalyzeRequestBody } from './client.js';
 import { MemoryCaesuraStore, type CaesuraStore, type StoredRecommendation } from './store.js';
-import type { CaesuraAnalysis, CaesuraConfig, ResolvedConfig } from './types.js';
+import type { CaesuraAnalysis, CaesuraConfig, ResolvedConfig, CaesuraEvent } from './types.js';
 import {
   buildAnalyzeMessages,
   collectMessages,
@@ -57,8 +57,9 @@ function resolveConfig(user: CaesuraConfig): ResolvedConfig {
     },
     timeoutMs: user.timeoutMs ?? 8000,
     onError: user.onError ?? ((e) => console.error('[caesura]', e)),
-    includeCreditUsage: !!user.onCreditUsage,
+    includeCreditUsage: !!user.onCreditUsage || !!user.onEvent,
     onCreditUsage: user.onCreditUsage,
+    onEvent: user.onEvent,
   };
 }
 
@@ -87,6 +88,16 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
         cfg.conversationId ??
         'default';
 
+      const emitEvent = (event: CaesuraEvent) => {
+        if (cfg.onEvent) {
+          try {
+            cfg.onEvent(event);
+          } catch (e) {
+            cfg.onError(e);
+          }
+        }
+      };
+
       const state = store.get(convId);
       state.turn += 1;
       const now = Date.now();
@@ -107,6 +118,25 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
       const shouldQuery =
         collected.length > 0 && turnsDue && secondsDue && !state.inFlight;
 
+      if (!shouldQuery) {
+        let reason: 'cadence-turns' | 'cadence-seconds' | 'in-flight' | 'no-messages';
+        if (collected.length === 0) {
+          reason = 'no-messages';
+        } else if (state.inFlight) {
+          reason = 'in-flight';
+        } else if (!turnsDue) {
+          reason = 'cadence-turns';
+        } else {
+          reason = 'cadence-seconds';
+        }
+        emitEvent({
+          type: 'skipped',
+          conversationId: convId,
+          turn: state.turn,
+          reason,
+        });
+      }
+
       const observe = async (): Promise<void> => {
         state.inFlight = true;
         state.lastQueryTurn = state.turn;
@@ -114,17 +144,38 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
         const queryTurn = state.turn;
         try {
           const messages = buildAnalyzeMessages(collected, state);
+          const body: AnalyzeRequestBody = {
+            ...(cfg.persist ? { conversationId: convId, sessionId: convId } : {}),
+            callType: cfg.callType,
+            messages,
+            persist: cfg.persist,
+            calculateSimilarities: cfg.calculateSimilarities,
+            similarityThreshold: cfg.similarityThreshold,
+          };
+
+          emitEvent({
+            type: 'request',
+            conversationId: convId,
+            queryTurn,
+            body,
+            includeCreditUsage: cfg.includeCreditUsage,
+          });
+
+          const startTime = Date.now();
           const { analysis, creditUsage } = await client.analyze(
-            {
-              ...(cfg.persist ? { conversationId: convId, sessionId: convId } : {}),
-              callType: cfg.callType,
-              messages,
-              persist: cfg.persist,
-              calculateSimilarities: cfg.calculateSimilarities,
-              similarityThreshold: cfg.similarityThreshold,
-            },
+            body,
             { includeCreditUsage: cfg.includeCreditUsage },
           );
+          const durationMs = Date.now() - startTime;
+
+          emitEvent({
+            type: 'response',
+            conversationId: convId,
+            queryTurn,
+            analysis,
+            creditUsage,
+            durationMs,
+          });
 
           let rec: StoredRecommendation | undefined;
 
@@ -137,6 +188,18 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
               createdAtTurn: queryTurn,
             };
             store.add(convId, [rec]);
+            emitEvent({
+              type: 'buffered',
+              conversationId: convId,
+              queryTurn,
+              recommendationId: rec.id,
+            });
+          } else {
+            emitEvent({
+              type: 'deduped',
+              conversationId: convId,
+              queryTurn,
+            });
           }
 
           if (creditUsage != null && cfg.onCreditUsage) {
@@ -154,6 +217,11 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
             }
           }
         } catch (e) {
+          emitEvent({
+            type: 'error',
+            conversationId: convId,
+            error: e,
+          });
           cfg.onError(e);
         } finally {
           state.inFlight = false;
@@ -182,6 +250,15 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
             collected.length > 0 ? collected[collected.length - 1]!.text : undefined;
 
           modifiedPrompt = injectBlock(modifiedPrompt, block, cfg.inject, lastAnalyzedText);
+
+          emitEvent({
+            type: 'injected',
+            conversationId: convId,
+            turn: state.turn,
+            text: block,
+            count: active.length,
+            placement: cfg.inject.placement,
+          });
         }
       }
 
