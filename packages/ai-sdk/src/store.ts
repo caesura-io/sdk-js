@@ -8,6 +8,13 @@ export interface StoredRecommendation {
   analysis: CaesuraAnalysis;
   /** The exact rendered block text as injected, for self-exclusion on collect. */
   injectedText?: string;
+  /**
+   * Content hash (FNV-1a of speakerName + text) of the last collected message
+   * at the time this analysis was requested. Used by `buildAnalyzeMessages` to
+   * interleave analyses at the correct chronological position, independent of
+   * prompt index stability.
+   */
+  afterMessageHash: string;
   createdAtMs: number;
   createdAtTurn: number;
 }

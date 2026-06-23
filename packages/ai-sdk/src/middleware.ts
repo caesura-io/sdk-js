@@ -5,7 +5,8 @@ import type { CaesuraAnalysis, CaesuraConfig, ResolvedConfig, CaesuraEvent } fro
 import {
   buildAnalyzeMessages,
   collectMessages,
-  injectBlock,
+  hashMessage,
+  injectBlocks,
   renderBlock,
   selectActive,
   applySkillPrompt,
@@ -48,7 +49,7 @@ function resolveConfig(user: CaesuraConfig): ResolvedConfig {
       maxInputChars: user.send?.maxInputChars,
     },
     inject: {
-      placement: user.inject?.placement ?? 'end',
+      placement: user.inject?.placement ?? 'after-last-analyzed',
       as: user.inject?.as ?? 'user',
       keepLast: user.inject?.keepLast ?? 'all',
       ttl: user.inject?.ttl ?? { type: 'none' },
@@ -181,9 +182,11 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
 
           // isSame (or no recommendation) -> add nothing; prior stays in context.
           if (!analysis.isSame && analysis.recommendation) {
+            const lastCollected = collected[collected.length - 1]!;
             rec = {
               id: nextId(),
               analysis,
+              afterMessageHash: hashMessage(lastCollected.speakerName ?? '', lastCollected.text),
               createdAtMs: Date.now(),
               createdAtTurn: queryTurn,
             };
@@ -239,24 +242,24 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
       // ── 2. INJECT ──────────────────────────────────────────────
       const active = selectActive(state, cfg.inject, now);
       if (active.length > 0) {
-        const block = renderBlock(active, cfg.inject);
-        if (block.trim() !== '') {
-          // record the rendered block so the NEXT turn can exclude it on collect.
-          for (const r of active) {
-            r.injectedText = block;
+        const blocks = renderBlock(active, cfg.inject);
+        if (blocks.length > 0) {
+          const injectedResult = injectBlocks(modifiedPrompt, blocks, cfg.inject, cfg.speakerNames);
+          modifiedPrompt = injectedResult.prompt;
+          
+          for (let i = 0; i < active.length; i++) {
+            active[i]!.injectedText = blocks[i]!.text;
           }
-
-          const lastAnalyzedText =
-            collected.length > 0 ? collected[collected.length - 1]!.text : undefined;
-
-          modifiedPrompt = injectBlock(modifiedPrompt, block, cfg.inject, lastAnalyzedText);
 
           emitEvent({
             type: 'injected',
             conversationId: convId,
             turn: state.turn,
-            text: block,
-            count: active.length,
+            blocks: blocks.map((b, i) => ({
+              recommendationId: b.recommendationId,
+              text: b.text,
+              index: injectedResult.indices[i]!,
+            })),
             placement: cfg.inject.placement,
           });
         }

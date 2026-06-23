@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   collectMessages,
+  buildAnalyzeMessages,
+  hashMessage,
   renderAnalysis,
   selectActive,
-  injectBlock,
+  injectBlocks,
   messageText,
   renderBlock,
   applySkillPrompt,
@@ -42,13 +44,11 @@ describe('helpers', () => {
         speakerRole: 'user',
         speakerName: 'Customer',
         text: 'user message',
-        sourceIndex: 1,
       });
       expect(collected[1]).toEqual({
-        speakerRole: 'assistant',
+        speakerRole: 'user',
         speakerName: 'Agent',
         text: 'assistant response',
-        sourceIndex: 2,
       });
     });
 
@@ -98,6 +98,232 @@ describe('helpers', () => {
     });
   });
 
+  describe('buildAnalyzeMessages', () => {
+    it('interleaves analyses at the correct chronological position', () => {
+      const collected = [
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'msg 1' },
+        { speakerRole: 'user' as const, speakerName: 'Agent', text: 'response 1' },
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'msg 2' },
+        { speakerRole: 'user' as const, speakerName: 'Agent', text: 'response 2' },
+      ];
+      const state: ConversationState = {
+        recommendations: [
+          { id: '1', analysis: { recommendation: 'A' }, afterMessageHash: hashMessage('Agent', 'response 1'), createdAtMs: 1000, createdAtTurn: 1 },
+          { id: '2', analysis: { recommendation: 'B' }, afterMessageHash: hashMessage('Agent', 'response 2'), createdAtMs: 2000, createdAtTurn: 2 },
+        ],
+        turn: 3,
+        lastQueryTurn: 2,
+        lastQueryMs: 2000,
+        inFlight: false,
+        lastAccessMs: 0,
+      };
+
+      const messages = buildAnalyzeMessages(collected, state);
+      expect(messages).toEqual([
+        { speakerRole: 'user', speakerName: 'Customer', text: 'msg 1' },
+        { speakerRole: 'user', speakerName: 'Agent', text: 'response 1' },
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'A' }) },
+        { speakerRole: 'user', speakerName: 'Customer', text: 'msg 2' },
+        { speakerRole: 'user', speakerName: 'Agent', text: 'response 2' },
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'B' }) },
+      ]);
+    });
+
+    it('all dialogue messages use speakerRole user', () => {
+      const collected = [
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'hello' },
+        { speakerRole: 'user' as const, speakerName: 'Agent', text: 'hi there' },
+      ];
+      const state: ConversationState = {
+        recommendations: [],
+        turn: 1,
+        lastQueryTurn: 0,
+        lastQueryMs: 0,
+        inFlight: false,
+        lastAccessMs: 0,
+      };
+
+      const messages = buildAnalyzeMessages(collected, state);
+      expect(messages.every((m) => m.speakerRole === 'user' || m.speakerRole === 'assistant')).toBe(true);
+      expect(messages[0]!.speakerRole).toBe('user');
+      expect(messages[1]!.speakerRole).toBe('user');
+    });
+
+    it('analyses have no speakerName', () => {
+      const collected = [
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'msg' },
+      ];
+      const state: ConversationState = {
+        recommendations: [
+          { id: '1', analysis: { recommendation: 'R' }, afterMessageHash: hashMessage('Customer', 'msg'), createdAtMs: 1000, createdAtTurn: 1 },
+        ],
+        turn: 2,
+        lastQueryTurn: 1,
+        lastQueryMs: 1000,
+        inFlight: false,
+        lastAccessMs: 0,
+      };
+
+      const messages = buildAnalyzeMessages(collected, state);
+      const analysis = messages.find((m) => m.speakerRole === 'assistant');
+      expect(analysis).toBeDefined();
+      expect(analysis!.speakerName).toBeUndefined();
+    });
+
+    it('analysis with trimmed anchor message is prepended', () => {
+      // The anchor message "msg 1" was trimmed out of the window
+      const collected = [
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'msg 3' },
+        { speakerRole: 'user' as const, speakerName: 'Agent', text: 'response 3' },
+      ];
+      const state: ConversationState = {
+        recommendations: [
+          { id: '1', analysis: { recommendation: 'old' }, afterMessageHash: hashMessage('Customer', 'msg 1'), createdAtMs: 500, createdAtTurn: 1 },
+        ],
+        turn: 3,
+        lastQueryTurn: 1,
+        lastQueryMs: 500,
+        inFlight: false,
+        lastAccessMs: 0,
+      };
+
+      const messages = buildAnalyzeMessages(collected, state);
+      expect(messages[0]!.speakerRole).toBe('assistant');
+      expect(messages[1]!.text).toBe('msg 3');
+      expect(messages[2]!.text).toBe('response 3');
+    });
+
+    it('async mode: analysis from turn 1 placed correctly in turn 3 window', () => {
+      // Simulates: Turn 1 prompt=[user:msg1], observe fires async.
+      // Turn 3 the prompt has grown but msg 1 is still present.
+      // Analysis from turn 1 stored with hash of "msg 1".
+      const collected = [
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'msg 1' },
+        { speakerRole: 'user' as const, speakerName: 'Agent', text: 'resp 1' },
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'msg 2' },
+        { speakerRole: 'user' as const, speakerName: 'Agent', text: 'resp 2' },
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'msg 3' },
+      ];
+      const state: ConversationState = {
+        recommendations: [
+          { id: '1', analysis: { recommendation: 'A' }, afterMessageHash: hashMessage('Customer', 'msg 1'), createdAtMs: 500, createdAtTurn: 1 },
+        ],
+        turn: 3,
+        lastQueryTurn: 1,
+        lastQueryMs: 500,
+        inFlight: false,
+        lastAccessMs: 0,
+      };
+
+      const messages = buildAnalyzeMessages(collected, state);
+      expect(messages[0]).toEqual({ speakerRole: 'user', speakerName: 'Customer', text: 'msg 1' });
+      expect(messages[1]).toEqual({ speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'A' }) });
+      expect(messages[2]).toEqual({ speakerRole: 'user', speakerName: 'Agent', text: 'resp 1' });
+      expect(messages).toHaveLength(6); // 5 dialogue + 1 analysis
+    });
+
+    it('maxMessages trimming: analysis from before window is prepended', () => {
+      // maxMessages=2 trimmed the window to only the last 2 messages.
+      // The analysis was generated from a message that's now outside the window.
+      const collected = [
+        { speakerRole: 'user' as const, speakerName: 'Agent', text: 'resp 2' },
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'msg 3' },
+      ];
+      const state: ConversationState = {
+        recommendations: [
+          { id: '1', analysis: { recommendation: 'old' }, afterMessageHash: hashMessage('Customer', 'msg 1'), createdAtMs: 500, createdAtTurn: 1 },
+          { id: '2', analysis: { recommendation: 'recent' }, afterMessageHash: hashMessage('Agent', 'resp 2'), createdAtMs: 1500, createdAtTurn: 2 },
+        ],
+        turn: 3,
+        lastQueryTurn: 2,
+        lastQueryMs: 1500,
+        inFlight: false,
+        lastAccessMs: 0,
+      };
+
+      const messages = buildAnalyzeMessages(collected, state);
+      expect(messages).toEqual([
+        // "old" analysis prepended (anchor message "msg 1" no longer in window)
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'old' }) },
+        { speakerRole: 'user', speakerName: 'Agent', text: 'resp 2' },
+        // "recent" analysis placed after "resp 2" (hash matches)
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'recent' }) },
+        { speakerRole: 'user', speakerName: 'Customer', text: 'msg 3' },
+      ]);
+    });
+
+    it('afterMessageHash on last collected message appends analysis at end', () => {
+      const collected = [
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'msg' },
+        { speakerRole: 'user' as const, speakerName: 'Agent', text: 'resp' },
+      ];
+      const state: ConversationState = {
+        recommendations: [
+          { id: '1', analysis: { recommendation: 'R' }, afterMessageHash: hashMessage('Agent', 'resp'), createdAtMs: 1000, createdAtTurn: 1 },
+        ],
+        turn: 2,
+        lastQueryTurn: 1,
+        lastQueryMs: 1000,
+        inFlight: false,
+        lastAccessMs: 0,
+      };
+
+      const messages = buildAnalyzeMessages(collected, state);
+      expect(messages).toEqual([
+        { speakerRole: 'user', speakerName: 'Customer', text: 'msg' },
+        { speakerRole: 'user', speakerName: 'Agent', text: 'resp' },
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'R' }) },
+      ]);
+    });
+
+    it('handles multiple identical messages gracefully', () => {
+      // Four identical messages from Customer
+      const collected = [
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'yes' },
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'yes' },
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'yes' },
+        { speakerRole: 'user' as const, speakerName: 'Customer', text: 'yes' },
+      ];
+
+      const hash = hashMessage('Customer', 'yes');
+      const state: ConversationState = {
+        // Five analyses all targeting the "yes" hash
+        recommendations: [
+          { id: '1', analysis: { recommendation: 'A1' }, afterMessageHash: hash, createdAtMs: 100, createdAtTurn: 1 },
+          { id: '2', analysis: { recommendation: 'A2' }, afterMessageHash: hash, createdAtMs: 200, createdAtTurn: 2 },
+          { id: '3', analysis: { recommendation: 'A3' }, afterMessageHash: hash, createdAtMs: 300, createdAtTurn: 3 },
+          { id: '4', analysis: { recommendation: 'A4' }, afterMessageHash: hash, createdAtMs: 400, createdAtTurn: 4 },
+          { id: '5', analysis: { recommendation: 'A5' }, afterMessageHash: hash, createdAtMs: 500, createdAtTurn: 5 },
+        ],
+        turn: 5,
+        lastQueryTurn: 5,
+        lastQueryMs: 500,
+        inFlight: false,
+        lastAccessMs: 0,
+      };
+
+      const messages = buildAnalyzeMessages(collected, state);
+      // We have 4 messages, 5 analyses.
+      // Iterating backwards:
+      // A5 pairs with yes[3]
+      // A4 pairs with yes[2]
+      // A3 pairs with yes[1]
+      // A2 pairs with yes[0]
+      // A1 has no position left, so it prepends.
+      expect(messages).toEqual([
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'A1' }) },
+        { speakerRole: 'user', speakerName: 'Customer', text: 'yes' },
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'A2' }) },
+        { speakerRole: 'user', speakerName: 'Customer', text: 'yes' },
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'A3' }) },
+        { speakerRole: 'user', speakerName: 'Customer', text: 'yes' },
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'A4' }) },
+        { speakerRole: 'user', speakerName: 'Customer', text: 'yes' },
+        { speakerRole: 'assistant', text: JSON.stringify({ recommendation: 'A5' }) },
+      ]);
+    });
+  });
+
   describe('renderAnalysis', () => {
     const analysis = {
       observation: 'User is confused',
@@ -125,8 +351,8 @@ describe('helpers', () => {
   describe('selectActive', () => {
     const state: ConversationState = {
       recommendations: [
-        { id: '1', analysis: { recommendation: 'A' }, createdAtMs: 1000, createdAtTurn: 1 },
-        { id: '2', analysis: { recommendation: 'B' }, createdAtMs: 2000, createdAtTurn: 2 },
+        { id: '1', analysis: { recommendation: 'A' }, afterMessageHash: hashMessage('Customer', 'x'), createdAtMs: 1000, createdAtTurn: 1 },
+        { id: '2', analysis: { recommendation: 'B' }, afterMessageHash: hashMessage('Customer', 'y'), createdAtMs: 2000, createdAtTurn: 2 },
       ],
       turn: 3,
       lastQueryTurn: 0,
@@ -159,46 +385,115 @@ describe('helpers', () => {
     });
   });
 
-  describe('injectBlock', () => {
-    it('appends to end by default', () => {
+  describe('injectBlocks', () => {
+    it('appends them all individually to end if placement is end', () => {
       const prompt: PromptMessageLike[] = [
         { role: 'user', content: 'hello' },
       ];
-
-      const injected = injectBlock(prompt, 'rec', { placement: 'end', as: 'user', keepLast: 'all', ttl: { type: 'none' }, template: '' }, undefined);
-      expect(injected).toHaveLength(2);
-      expect(injected[1]!.content[0]!.text).toBe('rec');
+      const blocks = [
+        { recommendationId: '1', text: 'rec 1', afterMessageHash: 'h1', createdAtTurn: 1 },
+        { recommendationId: '2', text: 'rec 2', afterMessageHash: 'h2', createdAtTurn: 2 },
+      ];
+      const injected = injectBlocks(prompt, blocks, { placement: 'end', as: 'user', keepLast: 'all', ttl: { type: 'none' }, template: '' }, { customer: 'Customer', agent: 'Agent' });
+      
+      expect(injected.prompt).toHaveLength(3);
+      expect(injected.prompt[1]!.content[0]!.text).toBe('rec 1');
+      expect(injected.prompt[2]!.content[0]!.text).toBe('rec 2');
+      expect(injected.indices).toEqual([1, 2]);
     });
 
-    it('spliced right after last analyzed message', () => {
+    it('interleaves blocks chronologically after their anchor message', () => {
+      const speakerNames = { customer: 'Customer', agent: 'Agent' };
+      const msg1Hash = hashMessage('Customer', 'first message');
+      const msg2Hash = hashMessage('Customer', 'second message');
+      const msg3Hash = hashMessage('Customer', 'third message');
+
       const prompt: PromptMessageLike[] = [
         { role: 'user', content: 'first message' },
         { role: 'user', content: 'second message' },
         { role: 'user', content: 'third message' },
       ];
+      
+      const blocks = [
+        { recommendationId: '1', text: 'rec 1', afterMessageHash: msg1Hash, createdAtTurn: 1 },
+        { recommendationId: '2', text: 'rec 2', afterMessageHash: msg2Hash, createdAtTurn: 2 },
+      ];
 
-      const injected = injectBlock(
+      const injected = injectBlocks(
         prompt,
-        'rec',
+        blocks,
         { placement: 'after-last-analyzed', as: 'user', keepLast: 'all', ttl: { type: 'none' }, template: '' },
-        'second message'
+        speakerNames
       );
 
-      expect(injected).toHaveLength(4);
-      expect(messageText(injected[0]!.content)).toBe('first message');
-      expect(messageText(injected[1]!.content)).toBe('second message');
-      expect(injected[2]!.content[0]!.text).toBe('rec');
-      expect(messageText(injected[3]!.content)).toBe('third message');
+      expect(injected.prompt).toHaveLength(5);
+      expect(messageText(injected.prompt[0]!.content)).toBe('first message');
+      expect(injected.prompt[1]!.content[0]!.text).toBe('rec 1');
+      expect(messageText(injected.prompt[2]!.content)).toBe('second message');
+      expect(injected.prompt[3]!.content[0]!.text).toBe('rec 2');
+      expect(messageText(injected.prompt[4]!.content)).toBe('third message');
+      expect(injected.indices).toEqual([1, 3]);
+    });
+
+    it('prepends the latest unanchored block and skips older unanchored ones', () => {
+      const speakerNames = { customer: 'Customer', agent: 'Agent' };
+      const prompt: PromptMessageLike[] = [
+        { role: 'user', content: 'only message' },
+      ];
+      
+      const blocks = [
+        { recommendationId: '1', text: 'old unanchored', afterMessageHash: 'missing', createdAtTurn: 1 },
+        { recommendationId: '2', text: 'new unanchored', afterMessageHash: 'also missing', createdAtTurn: 2 },
+      ];
+
+      const injected = injectBlocks(
+        prompt,
+        blocks,
+        { placement: 'after-last-analyzed', as: 'user', keepLast: 'all', ttl: { type: 'none' }, template: '' },
+        speakerNames
+      );
+
+      expect(injected.prompt).toHaveLength(2);
+      expect(injected.prompt[0]!.content[0]!.text).toBe('new unanchored');
+      expect(messageText(injected.prompt[1]!.content)).toBe('only message');
+      // Indices array maps back to original blocks array
+      expect(injected.indices).toEqual([-1, 0]); // block 1 skipped, block 2 prepended
+    });
+
+    it('merges blocks that land at the exact same index', () => {
+      const speakerNames = { customer: 'Customer', agent: 'Agent' };
+      const msgHash = hashMessage('Customer', 'only message');
+
+      const prompt: PromptMessageLike[] = [
+        { role: 'user', content: 'only message' },
+      ];
+      
+      const blocks = [
+        { recommendationId: '1', text: 'rec A', afterMessageHash: msgHash, createdAtTurn: 1 },
+        { recommendationId: '2', text: 'rec B', afterMessageHash: msgHash, createdAtTurn: 1 },
+      ];
+
+      const injected = injectBlocks(
+        prompt,
+        blocks,
+        { placement: 'after-last-analyzed', as: 'user', keepLast: 'all', ttl: { type: 'none' }, template: '' },
+        speakerNames
+      );
+
+      expect(injected.prompt).toHaveLength(2);
+      expect(messageText(injected.prompt[0]!.content)).toBe('only message');
+      expect(injected.prompt[1]!.content[0]!.text).toBe('rec A\n\nrec B');
+      expect(injected.indices).toEqual([1, 1]);
     });
   });
 
   describe('renderBlock', () => {
     it('concatenates recommendations without prepending skillPrompt', () => {
       const recs = [
-        { id: '1', analysis: { recommendation: 'Rec A' }, createdAtMs: 1000, createdAtTurn: 1 },
-        { id: '2', analysis: { recommendation: 'Rec B' }, createdAtMs: 2000, createdAtTurn: 2 },
+        { id: '1', analysis: { recommendation: 'Rec A' }, afterMessageHash: hashMessage('Customer', 'x'), createdAtMs: 1000, createdAtTurn: 1 },
+        { id: '2', analysis: { recommendation: 'Rec B' }, afterMessageHash: hashMessage('Customer', 'y'), createdAtMs: 2000, createdAtTurn: 2 },
       ];
-      const block = renderBlock(recs, {
+      const blocks = renderBlock(recs, {
         template: 'Rec: {analysis.recommendation}',
         skillPrompt: 'Should be ignored in renderBlock',
         placement: 'end',
@@ -206,7 +501,10 @@ describe('helpers', () => {
         keepLast: 'all',
         ttl: { type: 'none' },
       });
-      expect(block).toBe('Rec: Rec A\n\nRec: Rec B');
+      expect(blocks).toEqual([
+        { recommendationId: '1', text: 'Rec: Rec A', afterMessageHash: hashMessage('Customer', 'x'), createdAtTurn: 1 },
+        { recommendationId: '2', text: 'Rec: Rec B', afterMessageHash: hashMessage('Customer', 'y'), createdAtTurn: 2 },
+      ]);
     });
   });
 

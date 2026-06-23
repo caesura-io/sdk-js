@@ -5,6 +5,7 @@ import type {
   InjectConfig,
   ResolvedConfig,
   SendConfig,
+  SpeakerNames,
 } from './types.js';
 import type { ConversationState, StoredRecommendation } from './store.js';
 
@@ -17,10 +18,22 @@ export function messageText(content: PromptMessageLike['content']): string {
     .join('');
 }
 
-interface CollectedMessage extends AnalyzeMessage {
-  /** Index of the source message within the original prompt. */
-  sourceIndex: number;
+/**
+ * FNV-1a hash of a message's identity (speakerName + text).
+ * Used to track which dialogue message an analysis was generated after,
+ * independent of prompt array indices.
+ */
+export function hashMessage(speakerName: string, text: string): string {
+  const input = `${speakerName}\0${text}`;
+  let h = 0x811c9dc5; // FNV offset basis
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193); // FNV prime
+  }
+  return (h >>> 0).toString(36);
 }
+
+interface CollectedMessage extends AnalyzeMessage { }
 
 /**
  * Collect the dialogue window to send. Maps roles to assistant/user, labels
@@ -33,16 +46,13 @@ export function collectMessages(
   injectedTexts: ReadonlySet<string>,
 ): CollectedMessage[] {
   let msgs: CollectedMessage[] = prompt
-    .map((m, i) => ({ m, i }))
-    .filter(({ m }) => m.role === 'user' || m.role === 'assistant')
-    .map(({ m, i }) => {
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => {
       const text = messageText(m.content);
-      const role = m.role === 'assistant' ? 'assistant' : 'user';
       return {
-        speakerRole: role as 'assistant' | 'user',
-        speakerName: role === 'assistant' ? speakers.agent : speakers.customer,
+        speakerRole: 'user' as const,
+        speakerName: m.role === 'assistant' ? speakers.agent : speakers.customer,
         text,
-        sourceIndex: i,
       };
     })
     .filter((c) => !injectedTexts.has(c.text)); // skip our own injected blocks
@@ -66,25 +76,86 @@ export function collectMessages(
 }
 
 /**
- * Build the backend `messages` array: the dialogue window (user-role quotes)
- * plus the SDK's buffered prior analyses interleaved as assistant-role JSON,
- * so the route's existing dedup (obj.recommendation || obj.actionItem) works.
+ * Build the backend `messages` array: the dialogue window with the SDK's
+ * buffered prior analyses interleaved at their correct chronological position
+ * as assistant-role JSON. Preserves exact conversation order.
+ *
+ * Uses content hashes (not indices) to find insertion points, so the result
+ * is correct even when the prompt has been trimmed, reordered, or mutated
+ * between turns.
  */
 export function buildAnalyzeMessages(
   collected: CollectedMessage[],
   state: ConversationState,
 ): AnalyzeMessage[] {
-  const prior: AnalyzeMessage[] = state.recommendations.map((r) => ({
-    speakerRole: 'assistant',
-    text: JSON.stringify(r.analysis),
-  }));
-  const dialogue: AnalyzeMessage[] = collected.map((c) => ({
-    speakerRole: c.speakerRole,
-    speakerName: c.speakerName,
-    text: c.text,
-  }));
-  // Prior analyses first (as context), then the new dialogue window.
-  return [...prior, ...dialogue];
+  if (state.recommendations.length === 0) {
+    // Fast path: no analyses to interleave.
+    return collected.map((c) => ({
+      speakerRole: c.speakerRole,
+      speakerName: c.speakerName,
+      text: c.text,
+    }));
+  }
+
+  // O(n): build hash → array of positions.
+  // This allows us to perfectly pair multiple identical messages (e.g. "yes", "yes")
+  // with their corresponding analyses.
+  const hashToPositions = new Map<string, number[]>();
+  for (let i = 0; i < collected.length; i++) {
+    const c = collected[i]!;
+    const hash = hashMessage(c.speakerName ?? '', c.text);
+    let positions = hashToPositions.get(hash);
+    if (!positions) {
+      positions = [];
+      hashToPositions.set(hash, positions);
+    }
+    positions.push(i);
+  }
+
+  // O(m): resolve each recommendation's insertion position backwards.
+  // The newest recommendation gets the last occurrence of the message,
+  // the second newest gets the second last, etc.
+  // position === undefined  →  message was trimmed, prepend as context.
+  const placements = new Array<{ msg: AnalyzeMessage; position: number | undefined }>(
+    state.recommendations.length
+  );
+  for (let i = state.recommendations.length - 1; i >= 0; i--) {
+    const r = state.recommendations[i]!;
+    const positions = hashToPositions.get(r.afterMessageHash);
+    const position = positions && positions.length > 0 ? positions.pop() : undefined;
+    placements[i] = {
+      msg: { speakerRole: 'assistant' as const, text: JSON.stringify(r.analysis) },
+      position,
+    };
+  }
+
+  // Build the result array.
+  const result: AnalyzeMessage[] = [];
+
+  // Prepend at most 1 analysis (the latest one) if its anchor message was trimmed.
+  const unanchored = placements.filter((p) => p.position === undefined);
+  if (unanchored.length > 0) {
+    const latestUnanchored = unanchored[unanchored.length - 1]!;
+    result.push(latestUnanchored.msg);
+  }
+
+  // Walk collected messages and insert analyses after their anchor.
+  for (let ci = 0; ci < collected.length; ci++) {
+    const c = collected[ci]!;
+    result.push({
+      speakerRole: c.speakerRole,
+      speakerName: c.speakerName,
+      text: c.text,
+    });
+
+    for (const p of placements) {
+      if (p.position === ci) {
+        result.push(p.msg);
+      }
+    }
+  }
+
+  return result;
 }
 
 /** Apply TTL + keepLast to pick recommendations currently eligible for context. */
@@ -145,11 +216,15 @@ function stringifyValue(value: unknown): string {
 export function renderBlock(
   recs: StoredRecommendation[],
   inject: Required<Omit<InjectConfig, 'skillPrompt'>> & { skillPrompt?: string },
-): string {
+): { recommendationId: string; text: string; afterMessageHash: string; createdAtTurn: number }[] {
   return recs
-    .map((r) => renderAnalysis(r.analysis, inject.template))
-    .filter((s) => s.trim() !== '')
-    .join('\n\n');
+    .map((r) => ({
+      recommendationId: r.id,
+      text: renderAnalysis(r.analysis, inject.template),
+      afterMessageHash: r.afterMessageHash,
+      createdAtTurn: r.createdAtTurn,
+    }))
+    .filter((b) => b.text.trim() !== '');
 }
 
 /**
@@ -158,30 +233,127 @@ export function renderBlock(
  * message whose text starts with the last analyzed message's text; falls back
  * to 'end' if not found.
  */
-export function injectBlock(
-  prompt: PromptMessageLike[],
-  blockText: string,
-  inject: Required<Omit<InjectConfig, 'skillPrompt'>>,
-  lastAnalyzedText: string | undefined,
-): PromptMessageLike[] {
-  const msg: PromptMessageLike = {
-    role: inject.as,
-    content: [{ type: 'text', text: blockText }],
-  };
+export interface InjectBlockResult {
+  prompt: PromptMessageLike[];
+  indices: number[]; // The array index where each block landed
+}
 
-  if (inject.placement === 'end' || !lastAnalyzedText) {
-    return [...prompt, msg];
+export function injectBlocks(
+  prompt: PromptMessageLike[],
+  blocks: { recommendationId: string; text: string; afterMessageHash: string; createdAtTurn: number }[],
+  inject: Required<Omit<InjectConfig, 'skillPrompt'>>,
+  speakerNames: Required<SpeakerNames>,
+): InjectBlockResult {
+  if (blocks.length === 0) return { prompt, indices: [] };
+
+  if (inject.placement === 'end') {
+    // Append them all individually
+    const newPrompt = [...prompt];
+    const indices: number[] = [];
+    for (const b of blocks) {
+      newPrompt.push({ role: inject.as, content: [{ type: 'text', text: b.text }] });
+      indices.push(newPrompt.length - 1);
+    }
+    return { prompt: newPrompt, indices };
   }
 
-  // Search backwards for the last message that starts with the analyzed text.
-  for (let i = prompt.length - 1; i >= 0; i--) {
-    const text = messageText(prompt[i]!.content);
-    if (text.startsWith(lastAnalyzedText)) {
-      return [...prompt.slice(0, i + 1), msg, ...prompt.slice(i + 1)];
+  // placement === 'after-last-analyzed' -> interleave them chronologically
+  // 1. Hash the prompt
+  const hashToPositions = new Map<string, number[]>();
+  for (let i = 0; i < prompt.length; i++) {
+    const msg = prompt[i]!;
+    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+    const speakerName = msg.role === 'user' ? speakerNames.customer : speakerNames.agent;
+    const text = messageText(msg.content);
+    const hash = hashMessage(speakerName, text);
+    let positions = hashToPositions.get(hash);
+    if (!positions) {
+      positions = [];
+      hashToPositions.set(hash, positions);
+    }
+    positions.push(i);
+  }
+
+  // 2. Map blocks to indices backwards by turn
+  const turnGroups = new Map<number, typeof blocks>();
+  for (const b of blocks) {
+    let group = turnGroups.get(b.createdAtTurn);
+    if (!group) {
+      group = [];
+      turnGroups.set(b.createdAtTurn, group);
+    }
+    group.push(b);
+  }
+
+  const sortedTurns = Array.from(turnGroups.keys()).sort((a, b) => b - a);
+  const insertions: { index: number; text: string; blockIndex: number }[] = [];
+  let latestUnanchoredTurn: number | undefined;
+
+  for (const turn of sortedTurns) {
+    const groupBlocks = turnGroups.get(turn)!;
+    // All blocks in a turn share the same anchor
+    const afterHash = groupBlocks[0]!.afterMessageHash;
+    const positions = hashToPositions.get(afterHash);
+    const pos = positions && positions.length > 0 ? positions.pop() : undefined;
+
+    if (pos !== undefined) {
+      // Insert *after* the anchor message
+      for (const b of groupBlocks) {
+        insertions.push({ index: pos + 1, text: b.text, blockIndex: blocks.indexOf(b) });
+      }
+    } else {
+      if (latestUnanchoredTurn === undefined) {
+        latestUnanchoredTurn = turn; // keep the latest turn
+      }
     }
   }
-  // No match -> fall back to end.
-  return [...prompt, msg];
+
+  if (latestUnanchoredTurn !== undefined) {
+    // Prepend at index 0
+    const groupBlocks = turnGroups.get(latestUnanchoredTurn)!;
+    for (const b of groupBlocks) {
+      insertions.push({ index: 0, text: b.text, blockIndex: blocks.indexOf(b) });
+    }
+  }
+
+  // Group insertions by index so we can merge texts at the same index
+  const groupedInsertions = new Map<number, { texts: string[]; blockIndices: number[] }>();
+  for (const ins of insertions) {
+    let group = groupedInsertions.get(ins.index);
+    if (!group) {
+      group = { texts: [], blockIndices: [] };
+      groupedInsertions.set(ins.index, group);
+    }
+    // We want chronological order. The `blocks` array was chronological.
+    // We can just keep them in order by sorting them below.
+    group.texts.push(ins.text);
+    group.blockIndices.push(ins.blockIndex);
+  }
+
+  // 3. Splice into prompt in a forward pass, updating offsets
+  const sortedIndices = Array.from(groupedInsertions.keys()).sort((a, b) => a - b);
+  let newPrompt = [...prompt];
+  const finalIndices: number[] = new Array(blocks.length).fill(-1);
+  let offset = 0;
+
+  for (const index of sortedIndices) {
+    const group = groupedInsertions.get(index)!;
+
+    // Sort blockIndices so texts are joined chronologically
+    const sortedGroup = group.blockIndices.map((bi, i) => ({ bi, text: group.texts[i]! })).sort((a, b) => a.bi - b.bi);
+    const mergedText = sortedGroup.map(g => g.text).join('\n\n');
+
+    const insertPos = index + offset;
+    const msg: PromptMessageLike = { role: inject.as, content: [{ type: 'text', text: mergedText }] };
+    newPrompt = [...newPrompt.slice(0, insertPos), msg, ...newPrompt.slice(insertPos)];
+
+    for (const { bi } of sortedGroup) {
+      finalIndices[bi] = insertPos;
+    }
+    offset += 1;
+  }
+
+  return { prompt: newPrompt, indices: finalIndices };
 }
 
 /**

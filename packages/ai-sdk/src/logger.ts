@@ -121,10 +121,12 @@ export function createDebugLogger(options: DebugLoggerOptions = {}): (event: Cae
         break;
       }
       case 'injected': {
-        const text = truncate(event.text);
+        const blocks = processPayload(event.blocks);
+        // Extract indices for a quick summary
+        const indices = Array.from(new Set(event.blocks.map(b => b.index))).join(', ');
         logFn(
-          `${prefix} Conversation: ${event.conversationId}, Turn: ${event.turn}, Count: ${event.count}, Placement: ${event.placement}`,
-          { text }
+          `${prefix} Conversation: ${event.conversationId}, Turn: ${event.turn}, Indices: [${indices}], Count: ${event.blocks.length}, Placement: ${event.placement}`,
+          { blocks }
         );
         break;
       }

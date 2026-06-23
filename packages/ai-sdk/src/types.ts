@@ -206,10 +206,13 @@ export type CaesuraEvent =
       type: 'injected';
       conversationId: string;
       turn: number;
-      /** The exact text spliced into the prompt. */
-      text: string;
-      /** How many recommendations were active in the block. */
-      count: number;
+      /** The individual rendered recommendations that made up this block. */
+      blocks: {
+        recommendationId: string;
+        text: string;
+        /** The index in the modified prompt array where the block was injected. */
+        index: number;
+      }[];
       placement: Placement;
     }
   | {

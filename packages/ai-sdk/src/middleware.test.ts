@@ -242,7 +242,8 @@ describe('caesuraMiddleware credit callback integration', () => {
       expect(events[3].type).toBe('injected');
       expect(events[3].conversationId).toBe('test-obs');
       expect(events[3].turn).toBe(1);
-      expect(events[3].text).toContain('useful advice');
+      expect(events[3].blocks[0].text).toContain('useful advice');
+      expect(events[3].blocks[0].index).toBe(2);
     });
 
     it('emits skipped events with correct reasons', async () => {
@@ -390,6 +391,7 @@ describe('caesuraMiddleware credit callback integration', () => {
       store.add('test-inject', [{
         id: 'rec-1',
         analysis: { recommendation: 'do something' },
+        afterMessageHash: 'placeholder',
         createdAtMs: Date.now(),
         createdAtTurn: 1,
       }]);
@@ -421,9 +423,10 @@ describe('caesuraMiddleware credit callback integration', () => {
 
       const injectedEvent = events.find((e) => e.type === 'injected');
       expect(injectedEvent).toBeDefined();
-      expect(injectedEvent.text).toContain('do something');
-      expect(injectedEvent.count).toBe(1);
+      expect(injectedEvent.blocks[0].text).toContain('do something');
+      expect(injectedEvent.blocks).toHaveLength(1);
       expect(injectedEvent.placement).toBe('end');
+      expect(injectedEvent.blocks[0]!.index).toBe(2);
     });
 
     it('emits error event when Caesura backend client call fails', async () => {
@@ -542,16 +545,16 @@ describe('caesuraMiddleware credit callback integration', () => {
       });
 
       logger({
-        type: 'injected' as const,
+        type: 'injected',
         conversationId: 'c1',
         turn: 2,
-        text: 'This is a very long text',
-        count: 1,
+        index: 2,
+        blocks: [{ recommendationId: 'rec-1', text: 'This is a very long text' }],
         placement: 'end',
       });
 
       expect(logFn).toHaveBeenCalledTimes(1);
-      expect(logFn.mock.calls[0][1].text).toBe('This ... [truncated]');
+      expect(logFn.mock.calls[0][1].blocks[0].text).toBe('This ... [truncated]');
     });
 
     it('handles custom object loggers with .log or .info methods', () => {
