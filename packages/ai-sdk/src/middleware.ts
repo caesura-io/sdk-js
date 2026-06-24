@@ -267,5 +267,5 @@ export function caesuraMiddleware(config: CaesuraConfig): CaesuraMiddleware {
 
       return { ...params, prompt: modifiedPrompt as typeof params.prompt };
     },
-  };
+  } as CaesuraMiddleware;
 }
