@@ -20,7 +20,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Override the AI SDK major for this leg and re-typecheck/test.
-      - run: pnpm --filter @caesura/ai-sdk add -D ai@${{ matrix.ai-version }}
+      - run: pnpm --filter @caesura-io/ai-sdk add -D ai@${{ matrix.ai-version }}
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test

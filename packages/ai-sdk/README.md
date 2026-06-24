@@ -1,4 +1,4 @@
-# @caesura/ai-sdk
+# @caesura-io/ai-sdk
 
 Asynchronous, non-blocking recommendation injection for the [Vercel AI SDK](https://ai-sdk.dev).
 
@@ -12,7 +12,7 @@ model middleware.
 ## Install
 
 ```bash
-npm i @caesura/ai-sdk ai
+npm i @caesura-io/ai-sdk ai
 ```
 
 ## Quick start
@@ -20,7 +20,7 @@ npm i @caesura/ai-sdk ai
 ```ts
 import { wrapLanguageModel, generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
-import { caesuraMiddleware } from '@caesura/ai-sdk';
+import { caesuraMiddleware } from '@caesura-io/ai-sdk';
 
 const model = wrapLanguageModel({
   model: anthropic('claude-sonnet-4-6'),
@@ -42,7 +42,7 @@ const result = await generateText({
 You can request credit-usage metadata on every analyze call and receive the reported value via the `onCreditUsage` callback.
 
 ```ts
-import { caesuraMiddleware, createCreditMeter } from '@caesura/ai-sdk';
+import { caesuraMiddleware, createCreditMeter } from '@caesura-io/ai-sdk';
 
 // 1. Create a credit meter to accumulate and query metrics
 const meter = createCreditMeter();
