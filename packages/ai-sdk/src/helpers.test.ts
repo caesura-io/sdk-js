@@ -406,7 +406,6 @@ describe('helpers', () => {
       const speakerNames = { customer: 'Customer', agent: 'Agent' };
       const msg1Hash = hashMessage('Customer', 'first message');
       const msg2Hash = hashMessage('Customer', 'second message');
-      const msg3Hash = hashMessage('Customer', 'third message');
 
       const prompt: PromptMessageLike[] = [
         { role: 'user', content: 'first message' },

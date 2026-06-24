@@ -33,7 +33,7 @@ export function hashMessage(speakerName: string, text: string): string {
   return (h >>> 0).toString(36);
 }
 
-interface CollectedMessage extends AnalyzeMessage { }
+type CollectedMessage = AnalyzeMessage;
 
 /**
  * Collect the dialogue window to send. Maps roles to assistant/user, labels

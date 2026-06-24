@@ -12,9 +12,9 @@ export interface DebugLoggerOptions {
    * If an object with a `log` or `info` function is provided, calls that.
    */
   logger?:
-    | ((message: string, meta?: any) => void)
-    | { log: (message: string, meta?: any) => void }
-    | { info: (message: string, meta?: any) => void };
+    | ((message: string, meta?: unknown) => void)
+    | { log: (message: string, meta?: unknown) => void }
+    | { info: (message: string, meta?: unknown) => void };
 
   /**
    * If set, message texts/rendered blocks longer than this will be truncated in logs.
@@ -33,13 +33,13 @@ export function createDebugLogger(options: DebugLoggerOptions = {}): (event: Cae
     }
     if (logger && typeof logger === 'object') {
       if ('log' in logger && typeof logger.log === 'function') {
-        return (msg: string, meta?: any) => logger.log(msg, meta);
+        return (msg: string, meta?: unknown) => logger.log(msg, meta);
       }
       if ('info' in logger && typeof logger.info === 'function') {
-        return (msg: string, meta?: any) => logger.info(msg, meta);
+        return (msg: string, meta?: unknown) => logger.info(msg, meta);
       }
     }
-    return (msg: string, meta?: any) => {
+    return (msg: string, meta?: unknown) => {
       if (meta !== undefined) {
         console.log(msg, meta);
       } else {
@@ -56,16 +56,16 @@ export function createDebugLogger(options: DebugLoggerOptions = {}): (event: Cae
     return val.slice(0, truncateText) + '... [truncated]';
   };
 
-  const processPayload = (obj: any): any => {
+  const processPayload = (obj: unknown): unknown => {
     if (!obj || typeof obj !== 'object') {
       return obj;
     }
     if (Array.isArray(obj)) {
       return obj.map(processPayload);
     }
-    const out: any = {};
+    const out: Record<string, unknown> = {};
     for (const key of Object.keys(obj)) {
-      const val = obj[key];
+      const val = (obj as Record<string, unknown>)[key];
       if (key === 'text' && typeof val === 'string') {
         out[key] = truncate(val);
       } else if (typeof val === 'object' && val !== null) {

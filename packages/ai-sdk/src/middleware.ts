@@ -1,7 +1,7 @@
 import type { CaesuraMiddleware, PromptMessageLike } from './internal/ai-types.js';
 import { CaesuraClient, type AnalyzeRequestBody } from './client.js';
 import { MemoryCaesuraStore, type CaesuraStore, type StoredRecommendation } from './store.js';
-import type { CaesuraAnalysis, CaesuraConfig, ResolvedConfig, CaesuraEvent } from './types.js';
+import type { CaesuraConfig, ResolvedConfig, CaesuraEvent } from './types.js';
 import {
   buildAnalyzeMessages,
   collectMessages,
