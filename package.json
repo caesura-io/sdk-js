@@ -1,5 +1,5 @@
 {
-  "name": "@caesura/sdk-js",
+  "name": "@caesura-io/sdk-js",
   "private": true,
   "version": "0.0.0",
   "description": "Caesura SDKs for JavaScript/TypeScript AI frameworks",

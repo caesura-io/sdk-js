@@ -1,17 +1,17 @@
 {
-  "name": "@caesura/ai-sdk",
+  "name": "@caesura-io/ai-sdk",
   "version": "0.0.0",
   "description": "Caesura adapter for the Vercel AI SDK — asynchronous, non-blocking recommendation injection via language model middleware.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Caesura",
-  "homepage": "https://github.com/caesura-io/caesura-sdk-js/tree/main/packages/ai-sdk#readme",
+  "homepage": "https://github.com/caesura-io/sdk-js/tree/main/packages/ai-sdk#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/caesura-io/caesura-sdk-js.git",
+    "url": "git+https://github.com/caesura-io/sdk-js.git",
     "directory": "packages/ai-sdk"
   },
   "bugs": {
-    "url": "https://github.com/caesura-io/caesura-sdk-js/issues"
+    "url": "https://github.com/caesura-io/sdk-js/issues"
   },
   "keywords": [
     "caesura",
