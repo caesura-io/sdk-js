@@ -1,6 +1,6 @@
 {
   "name": "@caesura-io/openai",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Transparent proxy wrapper for the official OpenAI SDK to inject Caesura recommendations.",
   "license": "Apache-2.0",
   "author": "Caesura",
