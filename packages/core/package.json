@@ -1,6 +1,6 @@
 {
   "name": "@caesura-io/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Framework-agnostic core for Caesura — analyze, inject, and credit-metering logic shared across SDK integrations.",
   "license": "Apache-2.0",
   "author": "Caesura",
