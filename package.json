@@ -5,7 +5,7 @@
   "description": "Caesura SDKs for JavaScript/TypeScript AI frameworks",
   "type": "module",
   "engines": {
-    "node": ">=18.17"
+    "node": ">=22.0.0"
   },
   "packageManager": "pnpm@9.12.0",
   "scripts": {

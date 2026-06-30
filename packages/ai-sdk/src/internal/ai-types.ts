@@ -1,11 +1,13 @@
 // Single source of truth for AI-SDK-version-coupled types.
-// We re-export the middleware type from `ai` itself, so the consumer's
-// installed major (v5 -> LanguageModelV2*, v6 -> LanguageModelV3*) decides
-// the spec version. If `ai` doesn't export a clean alias under some version,
-// this is the ONE place to adjust.
-import type { LanguageModelMiddleware } from 'ai';
-
-export type CaesuraMiddleware = LanguageModelMiddleware;
+// Instead of importing from `ai` directly (which breaks across versions like v7
+// where `LanguageModelMiddleware` was renamed to `LanguageModelV4Middleware`),
+// we define a structural type that satisfies `wrapLanguageModel`.
+export interface CaesuraMiddleware {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  specificationVersion: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  transformParams?: (args: { type: 'generate' | 'stream'; params: any; model: any }) => PromiseLike<any>;
+}
 
 /**
  * Minimal structural type for the prompt parts we read.
