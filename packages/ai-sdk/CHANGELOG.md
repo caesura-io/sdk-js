@@ -1,5 +1,11 @@
 # @caesura-io/ai-sdk
 
+## 0.2.1
+
+### Patch Changes
+
+- 817cba6: Updated examples
+
 ## 0.2.0
 
 ### Minor Changes
