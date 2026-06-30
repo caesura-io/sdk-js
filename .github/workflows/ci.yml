@@ -22,6 +22,9 @@ jobs:
       # Override the AI SDK major for this leg and re-typecheck/test.
       - run: pnpm --filter @caesura-io/ai-sdk add -D ai@${{ matrix.ai-version }}
       - run: pnpm lint
+      # Build before typecheck — downstream packages (ai-sdk, openai) resolve
+      # @caesura-io/core via its "types" export (dist/index.d.ts), which only
+      # exists after the build step.
+      - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test
-      - run: pnpm build

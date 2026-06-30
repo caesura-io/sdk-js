@@ -1,14 +1,14 @@
 {
-  "name": "@caesura-io/ai-sdk",
-  "version": "0.1.1",
-  "description": "Caesura adapter for the Vercel AI SDK — asynchronous, non-blocking recommendation injection via language model middleware.",
+  "name": "@caesura-io/core",
+  "version": "0.1.0",
+  "description": "Framework-agnostic core for Caesura — analyze, inject, and credit-metering logic shared across SDK integrations.",
   "license": "Apache-2.0",
   "author": "Caesura",
-  "homepage": "https://github.com/caesura-io/sdk-js/tree/main/packages/ai-sdk#readme",
+  "homepage": "https://github.com/caesura-io/sdk-js/tree/main/packages/core#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/caesura-io/sdk-js.git",
-    "directory": "packages/ai-sdk"
+    "directory": "packages/core"
   },
   "bugs": {
     "url": "https://github.com/caesura-io/sdk-js/issues"
@@ -16,12 +16,9 @@
   "keywords": [
     "caesura",
     "ai",
-    "ai-sdk",
-    "vercel-ai-sdk",
     "llm",
-    "agents",
-    "middleware",
-    "recommendations"
+    "recommendations",
+    "core"
   ],
   "type": "module",
   "main": "./dist/index.cjs",
@@ -47,14 +44,7 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "dependencies": {
-    "@caesura-io/core": "workspace:*"
-  },
-  "peerDependencies": {
-    "ai": "^5.0.0 || ^6.0.0"
-  },
   "devDependencies": {
-    "ai": "^6.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.6.2",
     "vitest": "^2.1.2"
