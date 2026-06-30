@@ -1,5 +1,11 @@
 # @caesura-io/ai-sdk
 
+## 0.3.0
+
+### Minor Changes
+
+- c0595a1: Added Vercel AI SDK v7 support
+
 ## 0.2.1
 
 ### Patch Changes
