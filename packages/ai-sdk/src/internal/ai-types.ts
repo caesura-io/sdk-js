@@ -1,12 +1,15 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // Single source of truth for AI-SDK-version-coupled types.
 // Instead of importing from `ai` directly (which breaks across versions like v7
 // where `LanguageModelMiddleware` was renamed to `LanguageModelV4Middleware`),
 // we define a structural type that satisfies `wrapLanguageModel`.
 export interface CaesuraMiddleware {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   specificationVersion: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  transformParams?: (args: { type: 'generate' | 'stream'; params: any; model: any }) => PromiseLike<any>;
+  transformParams?: (args: {
+    type: 'generate' | 'stream';
+    params: any;
+    model: any;
+  }) => PromiseLike<any>;
 }
 
 /**
@@ -17,5 +20,7 @@ export interface CaesuraMiddleware {
 export type TextPartLike = { type: 'text'; text: string };
 export type PromptMessageLike = {
   role: string;
+  name?: string;
+  speakerIndex?: number;
   content: string | Array<{ type: string; [k: string]: unknown }>;
 };

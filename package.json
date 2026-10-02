@@ -2,7 +2,7 @@
   "name": "@caesura-io/sdk-js",
   "private": true,
   "version": "0.0.0",
-  "description": "Caesura SDKs for JavaScript/TypeScript AI frameworks",
+  "description": "CaesuraO SDKs for JavaScript/TypeScript AI frameworks",
   "type": "module",
   "engines": {
     "node": ">=22.0.0"
@@ -17,7 +17,8 @@
     "test": "pnpm -r test",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "pnpm build && changeset publish"
+    "release": "pnpm build && changeset publish",
+    "test:packages": "node scripts/check-packages.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.9",

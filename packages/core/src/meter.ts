@@ -40,7 +40,9 @@ export interface CreditMeter {
   snapshot(): { total: number; byConversation: Record<string, number> };
 }
 
-export function createCreditMeter(options: CreditMeterOptions = {}): CreditMeter {
+export function createCreditMeter(
+  options: CreditMeterOptions = {},
+): CreditMeter {
   const keepEvents = options.keepEvents ?? true;
   const maxEvents = options.maxEvents ?? 10000;
 
@@ -60,16 +62,22 @@ export function createCreditMeter(options: CreditMeterOptions = {}): CreditMeter
   const record = (info: CreditUsageInfo) => {
     totalCredits += info.credits;
     const convId = info.conversationId ?? '(none)';
-    
+
     // Update credit totals
-    conversationTotals.set(convId, (conversationTotals.get(convId) ?? 0) + info.credits);
+    conversationTotals.set(
+      convId,
+      (conversationTotals.get(convId) ?? 0) + info.credits,
+    );
 
     // Update counts
     totalCalls += 1;
     conversationCalls.set(convId, (conversationCalls.get(convId) ?? 0) + 1);
     if (info.isSame) {
       totalSameCalls += 1;
-      conversationSameCalls.set(convId, (conversationSameCalls.get(convId) ?? 0) + 1);
+      conversationSameCalls.set(
+        convId,
+        (conversationSameCalls.get(convId) ?? 0) + 1,
+      );
     }
 
     if (keepEvents) {
@@ -96,27 +104,18 @@ export function createCreditMeter(options: CreditMeterOptions = {}): CreditMeter
       return conversationTotals.get(conversationId ?? '(none)') ?? 0;
     },
     count(filter) {
-      if (keepEvents) {
-        return eventList.filter((e) => {
-          if (filter?.conversationId !== undefined) {
-            const expected = filter.conversationId ?? '(none)';
-            const actual = e.conversationId ?? '(none)';
-            if (actual !== expected) return false;
-          }
-          if (filter?.isSame !== undefined) {
-            if (!!e.isSame !== !!filter.isSame) return false;
-          }
-          return true;
-        }).length;
-      }
-
-      const targetConv = filter?.conversationId !== undefined ? (filter.conversationId ?? '(none)') : undefined;
+      const targetConv =
+        filter?.conversationId !== undefined
+          ? (filter.conversationId ?? '(none)')
+          : undefined;
       const targetSame = filter?.isSame;
 
       if (targetConv !== undefined) {
         if (targetSame !== undefined) {
           const same = conversationSameCalls.get(targetConv) ?? 0;
-          return targetSame ? same : (conversationCalls.get(targetConv) ?? 0) - same;
+          return targetSame
+            ? same
+            : (conversationCalls.get(targetConv) ?? 0) - same;
         }
         return conversationCalls.get(targetConv) ?? 0;
       }

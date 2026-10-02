@@ -1,5 +1,8 @@
 import {
   hashMessage,
+  isInjectedMessage,
+  dialogueAnchors,
+  limitMessages,
   type AnalyzeMessage,
   type InjectConfig,
   type ResolvedConfig,
@@ -22,12 +25,32 @@ export function getMessageText(content: unknown): string {
   if (Array.isArray(content)) {
     return content
       .filter((p): p is { type: 'text'; text: string } => {
-        return p && typeof p === 'object' && 'type' in p && p.type === 'text' && 'text' in p && typeof p.text === 'string';
+        return (
+          p &&
+          typeof p === 'object' &&
+          'type' in p &&
+          ['text', 'input_text', 'output_text'].includes(p.type) &&
+          'text' in p &&
+          typeof p.text === 'string'
+        );
       })
       .map((p) => p.text)
       .join('');
   }
   return '';
+}
+
+/** Remove recognized prior SDK guidance without changing caller-owned messages. */
+export function stripInjectedOpenAIMessages(
+  input: unknown,
+  known: ReadonlySet<string>,
+): unknown {
+  // String input is fresh dialogue, never an SDK-emitted message array.
+  if (!Array.isArray(input)) return input;
+  return input.filter(
+    (m: MessageLike) =>
+      !m || !isInjectedMessage(m, getMessageText(m.content), known),
+  );
 }
 
 /**
@@ -37,8 +60,12 @@ export function collectOpenAIMessages(
   messagesOrInput: unknown,
   send: { maxMessages?: number | 'all'; maxInputChars?: number },
   speakers: ResolvedConfig['speakerNames'],
-  injectedTexts: ReadonlySet<string>,
+  injectedMessages: ReadonlySet<string>,
 ): AnalyzeMessage[] {
+  messagesOrInput = stripInjectedOpenAIMessages(
+    messagesOrInput,
+    injectedMessages,
+  );
   let rawItems: MessageLike[];
 
   if (typeof messagesOrInput === 'string') {
@@ -51,32 +78,36 @@ export function collectOpenAIMessages(
 
   let msgs: AnalyzeMessage[] = rawItems
     .filter((m): m is MessageLike & { role: 'user' | 'assistant' } => {
-      return !!(m && typeof m === 'object' && (m.role === 'user' || m.role === 'assistant'));
+      return !!(
+        m &&
+        typeof m === 'object' &&
+        (m.role === 'user' || m.role === 'assistant') &&
+        (m.type === undefined || m.type === 'message')
+      );
     })
     .map((m) => {
       const text = getMessageText(m.content);
       return {
+        // Both participants are input to the analysis prompt.
         speakerRole: 'user' as const,
-        speakerName: m.role === 'assistant' ? speakers.agent : speakers.customer,
+        speakerIndex:
+          typeof m.speakerIndex === 'number'
+            ? m.speakerIndex
+            : m.role === 'assistant'
+              ? 0
+              : 1,
+        speakerName:
+          typeof m.name === 'string'
+            ? m.name
+            : m.role === 'assistant'
+              ? speakers.agent
+              : speakers.customer,
         text,
       };
     })
-    .filter((c) => !injectedTexts.has(c.text));
+    .filter((c) => c.text.trim() !== '');
 
-  if (send.maxMessages !== 'all' && send.maxMessages !== undefined) {
-    msgs = msgs.slice(-send.maxMessages);
-  }
-
-  if (send.maxInputChars != null) {
-    let total = msgs.reduce((n, c) => n + c.text.length, 0);
-    while (total > send.maxInputChars && msgs.length > 1) {
-      total -= msgs[0]!.text.length;
-      msgs.shift();
-    }
-    if (msgs.length === 1 && msgs[0]!.text.length > send.maxInputChars) {
-      msgs[0] = { ...msgs[0]!, text: msgs[0]!.text.slice(-send.maxInputChars) };
-    }
-  }
+  msgs = limitMessages(msgs, send);
 
   return msgs;
 }
@@ -119,7 +150,9 @@ export function applySkillPromptOpenAI(
   }
 
   // Find system or developer message
-  const sysIndex = rawItems.findIndex((m) => m && (m.role === 'system' || m.role === 'developer'));
+  const sysIndex = rawItems.findIndex(
+    (m) => m && (m.role === 'system' || m.role === 'developer'),
+  );
 
   if (sysIndex !== -1) {
     const sysMsg = rawItems[sysIndex]!;
@@ -134,7 +167,10 @@ export function applySkillPromptOpenAI(
     if (typeof currentContent === 'string') {
       newContent = `${currentContent}\n\n${skillPrompt}`;
     } else if (Array.isArray(currentContent)) {
-      newContent = [...currentContent, { type: 'text', text: `\n\n${skillPrompt}` }];
+      newContent = [
+        ...currentContent,
+        { type: 'text', text: `\n\n${skillPrompt}` },
+      ];
     } else {
       newContent = skillPrompt;
     }
@@ -152,9 +188,13 @@ export function applySkillPromptOpenAI(
   }
 
   return {
-    result: isStringInput && rawItems.length === 1 && rawItems[0] && rawItems[0].role === 'user'
-      ? rawItems[0].content
-      : rawItems,
+    result:
+      isStringInput &&
+      rawItems.length === 1 &&
+      rawItems[0] &&
+      rawItems[0].role === 'user'
+        ? rawItems[0].content
+        : rawItems,
   };
 }
 
@@ -163,10 +203,21 @@ export function applySkillPromptOpenAI(
  */
 export function injectBlocksOpenAI(
   messagesOrInput: unknown,
-  blocks: { recommendationId: string; text: string; afterMessageHash: string; createdAtTurn: number }[],
+  blocks: {
+    recommendationId: string;
+    text: string;
+    afterMessageHash: string;
+    afterMessageAnchor?: string;
+    createdAtTurn: number;
+  }[],
   inject: Required<Omit<InjectConfig, 'skillPrompt'>>,
   speakerNames: Required<SpeakerNames>,
+  injectedMessages: ReadonlySet<string> = new Set(),
 ): { result: unknown; indices: number[] } {
+  messagesOrInput = stripInjectedOpenAIMessages(
+    messagesOrInput,
+    injectedMessages,
+  );
   if (blocks.length === 0) {
     return { result: messagesOrInput, indices: [] };
   }
@@ -190,29 +241,43 @@ export function injectBlocksOpenAI(
       indices.push(rawItems.length - 1);
     }
     return {
-      result: isStringInput && rawItems.length === 1 && rawItems[0] && rawItems[0].role === 'user' ? rawItems[0].content : rawItems,
+      result:
+        isStringInput &&
+        rawItems.length === 1 &&
+        rawItems[0] &&
+        rawItems[0].role === 'user'
+          ? rawItems[0].content
+          : rawItems,
       indices,
     };
   }
 
   // placement === 'after-last-analyzed' -> interleave them chronologically
-  // 1. Hash the prompt items
+  // Use the same collection rules as observation, retaining provider indices.
+  const dialogue: AnalyzeMessage[] = [];
+  const dialoguePositions: number[] = [];
   const hashToPositions = new Map<string, number[]>();
   for (let i = 0; i < rawItems.length; i++) {
-    const msg = rawItems[i];
-    if (!msg || msg.role !== 'user' && msg.role !== 'assistant') {
-      continue;
-    }
-    const speakerName = msg.role === 'user' ? speakerNames.customer : speakerNames.agent;
-    const text = getMessageText(msg.content);
-    const hash = hashMessage(speakerName, text);
-    let positions = hashToPositions.get(hash);
-    if (!positions) {
-      positions = [];
-      hashToPositions.set(hash, positions);
-    }
+    const [message] = collectOpenAIMessages(
+      [rawItems[i]!],
+      { maxMessages: 'all' },
+      speakerNames,
+      new Set(), // Guidance was already stripped; string input is fresh dialogue.
+    );
+    if (!message) continue;
+    dialogue.push(message);
+    dialoguePositions.push(i);
+    const hash = hashMessage(message.speakerName ?? '', message.text);
+    const positions = hashToPositions.get(hash) ?? [];
     positions.push(i);
+    hashToPositions.set(hash, positions);
   }
+  const anchorToPosition = new Map(
+    dialogueAnchors(dialogue).map((anchor, i) => [
+      anchor,
+      dialoguePositions[i]!,
+    ]),
+  );
 
   // 2. Map blocks to indices backwards by turn
   const turnGroups = new Map<number, typeof blocks>();
@@ -233,11 +298,26 @@ export function injectBlocksOpenAI(
     const groupBlocks = turnGroups.get(turn)!;
     const afterHash = groupBlocks[0]!.afterMessageHash;
     const positions = hashToPositions.get(afterHash);
-    const pos = positions && positions.length > 0 ? positions.pop() : undefined;
+    const anchor = groupBlocks[0]!.afterMessageAnchor;
+    const pos =
+      anchor !== undefined ? anchorToPosition.get(anchor) : positions?.pop();
 
     if (pos !== undefined) {
       for (const b of groupBlocks) {
-        insertions.push({ index: pos + 1, text: b.text, blockIndex: blocks.indexOf(b) });
+        let boundary = pos + 1;
+        while (
+          boundary < rawItems.length &&
+          (rawItems[boundary]?.role === 'tool' ||
+            rawItems[boundary]?.type === 'function_call' ||
+            rawItems[boundary]?.type === 'function_call_output' ||
+            rawItems[boundary]?.type === 'reasoning')
+        )
+          boundary++;
+        insertions.push({
+          index: boundary,
+          text: b.text,
+          blockIndex: blocks.indexOf(b),
+        });
       }
     } else {
       if (latestUnanchoredTurn === undefined) {
@@ -249,11 +329,18 @@ export function injectBlocksOpenAI(
   if (latestUnanchoredTurn !== undefined) {
     const groupBlocks = turnGroups.get(latestUnanchoredTurn)!;
     for (const b of groupBlocks) {
-      insertions.push({ index: 0, text: b.text, blockIndex: blocks.indexOf(b) });
+      insertions.push({
+        index: 0,
+        text: b.text,
+        blockIndex: blocks.indexOf(b),
+      });
     }
   }
 
-  const groupedInsertions = new Map<number, { texts: string[]; blockIndices: number[] }>();
+  const groupedInsertions = new Map<
+    number,
+    { texts: string[]; blockIndices: number[] }
+  >();
   for (const ins of insertions) {
     let group = groupedInsertions.get(ins.index);
     if (!group) {
@@ -264,7 +351,9 @@ export function injectBlocksOpenAI(
     group.blockIndices.push(ins.blockIndex);
   }
 
-  const sortedIndices = Array.from(groupedInsertions.keys()).sort((a, b) => a - b);
+  const sortedIndices = Array.from(groupedInsertions.keys()).sort(
+    (a, b) => a - b,
+  );
   let newItems = [...rawItems];
   const finalIndices: number[] = new Array(blocks.length).fill(-1);
   let offset = 0;
@@ -278,7 +367,11 @@ export function injectBlocksOpenAI(
 
     const insertPos = index + offset;
     const msg = { role: inject.as, content: mergedText };
-    newItems = [...newItems.slice(0, insertPos), msg, ...newItems.slice(insertPos)];
+    newItems = [
+      ...newItems.slice(0, insertPos),
+      msg,
+      ...newItems.slice(insertPos),
+    ];
 
     for (const { bi } of sortedGroup) {
       finalIndices[bi] = insertPos;
@@ -287,7 +380,13 @@ export function injectBlocksOpenAI(
   }
 
   return {
-    result: isStringInput && newItems.length === 1 && newItems[0] && newItems[0].role === 'user' ? newItems[0].content : newItems,
+    result:
+      isStringInput &&
+      newItems.length === 1 &&
+      newItems[0] &&
+      newItems[0].role === 'user'
+        ? newItems[0].content
+        : newItems,
     indices: finalIndices,
   };
 }

@@ -5,7 +5,7 @@ import {
   messageText,
   applySkillPrompt,
 } from './helpers.js';
-import { hashMessage } from '@caesura-io/core';
+import { hashMessage, injectedMessageKey } from '@caesura-io/core';
 import type { PromptMessageLike } from './internal/ai-types.js';
 
 describe('AI SDK helpers', () => {
@@ -15,11 +15,21 @@ describe('AI SDK helpers', () => {
     });
 
     it('handles text parts array', () => {
-      expect(messageText([{ type: 'text', text: 'hello' }, { type: 'text', text: ' world' }])).toBe('hello world');
+      expect(
+        messageText([
+          { type: 'text', text: 'hello' },
+          { type: 'text', text: ' world' },
+        ]),
+      ).toBe('hello world');
     });
 
     it('skips non-text parts', () => {
-      expect(messageText([{ type: 'image', text: 'ignored' }, { type: 'text', text: 'hello' }])).toBe('hello');
+      expect(
+        messageText([
+          { type: 'image', text: 'ignored' },
+          { type: 'text', text: 'hello' },
+        ]),
+      ).toBe('hello');
     });
   });
 
@@ -33,27 +43,39 @@ describe('AI SDK helpers', () => {
         { role: 'assistant', content: 'assistant response' },
       ];
 
-      const collected = collectMessages(prompt, { maxMessages: 10 }, speakers, new Set());
+      const collected = collectMessages(
+        prompt,
+        { maxMessages: 10 },
+        speakers,
+        new Set(),
+      );
       expect(collected).toHaveLength(2);
       expect(collected[0]).toEqual({
         speakerRole: 'user',
         speakerName: 'Customer',
+        speakerIndex: 1,
         text: 'user message',
       });
       expect(collected[1]).toEqual({
         speakerRole: 'user',
         speakerName: 'Agent',
+        speakerIndex: 0,
         text: 'assistant response',
       });
     });
 
-    it('skips injected blocks based on text match', () => {
+    it('skips injected blocks based on role and text', () => {
       const prompt: PromptMessageLike[] = [
         { role: 'user', content: 'hello' },
         { role: 'user', content: 'injected rec' },
       ];
 
-      const collected = collectMessages(prompt, { maxMessages: 10 }, speakers, new Set(['injected rec']));
+      const collected = collectMessages(
+        prompt,
+        { maxMessages: 10 },
+        speakers,
+        new Set([injectedMessageKey('user', 'injected rec')]),
+      );
       expect(collected).toHaveLength(1);
       expect(collected[0]!.text).toBe('hello');
     });
@@ -65,7 +87,12 @@ describe('AI SDK helpers', () => {
         { role: 'user', content: '3' },
       ];
 
-      const collected = collectMessages(prompt, { maxMessages: 2 }, speakers, new Set());
+      const collected = collectMessages(
+        prompt,
+        { maxMessages: 2 },
+        speakers,
+        new Set(),
+      );
       expect(collected).toHaveLength(2);
       expect(collected[0]!.text).toBe('2');
       expect(collected[1]!.text).toBe('3');
@@ -77,9 +104,13 @@ describe('AI SDK helpers', () => {
         { role: 'user', content: 'world' },
       ];
 
-      const collected = collectMessages(prompt, { maxMessages: 10, maxInputChars: 7 }, speakers, new Set());
-      expect(collected).toHaveLength(1);
-      expect(collected[0]!.text).toBe('world');
+      const collected = collectMessages(
+        prompt,
+        { maxMessages: 10, maxInputChars: 7 },
+        speakers,
+        new Set(),
+      );
+      expect(collected.map((m) => m.text)).toEqual(['lo', 'world']);
     });
 
     it('trims head of a single message if it exceeds maxInputChars', () => {
@@ -87,23 +118,46 @@ describe('AI SDK helpers', () => {
         { role: 'user', content: 'hello world' },
       ];
 
-      const collected = collectMessages(prompt, { maxMessages: 10, maxInputChars: 5 }, speakers, new Set());
-      expect(collected).toHaveLength(1);
-      expect(collected[0]!.text).toBe('world');
+      const collected = collectMessages(
+        prompt,
+        { maxMessages: 10, maxInputChars: 5 },
+        speakers,
+        new Set(),
+      );
+      expect(collected.map((m) => m.text)).toEqual(['world']);
     });
   });
 
   describe('injectBlocks', () => {
     it('appends them all individually to end if placement is end', () => {
-      const prompt: PromptMessageLike[] = [
-        { role: 'user', content: 'hello' },
-      ];
+      const prompt: PromptMessageLike[] = [{ role: 'user', content: 'hello' }];
       const blocks = [
-        { recommendationId: '1', text: 'rec 1', afterMessageHash: 'h1', createdAtTurn: 1 },
-        { recommendationId: '2', text: 'rec 2', afterMessageHash: 'h2', createdAtTurn: 2 },
+        {
+          recommendationId: '1',
+          text: 'rec 1',
+          afterMessageHash: 'h1',
+          createdAtTurn: 1,
+        },
+        {
+          recommendationId: '2',
+          text: 'rec 2',
+          afterMessageHash: 'h2',
+          createdAtTurn: 2,
+        },
       ];
-      const injected = injectBlocks(prompt, blocks, { placement: 'end', as: 'user', keepLast: 'all', ttl: { type: 'none' }, template: '' }, { customer: 'Customer', agent: 'Agent' });
-      
+      const injected = injectBlocks(
+        prompt,
+        blocks,
+        {
+          placement: 'end',
+          as: 'user',
+          keepLast: 'all',
+          ttl: { type: 'none' },
+          template: '',
+        },
+        { customer: 'Customer', agent: 'Agent' },
+      );
+
       expect(injected.prompt).toHaveLength(3);
       expect(injected.prompt[1]!.content[0]!.text).toBe('rec 1');
       expect(injected.prompt[2]!.content[0]!.text).toBe('rec 2');
@@ -120,17 +174,33 @@ describe('AI SDK helpers', () => {
         { role: 'user', content: 'second message' },
         { role: 'user', content: 'third message' },
       ];
-      
+
       const blocks = [
-        { recommendationId: '1', text: 'rec 1', afterMessageHash: msg1Hash, createdAtTurn: 1 },
-        { recommendationId: '2', text: 'rec 2', afterMessageHash: msg2Hash, createdAtTurn: 2 },
+        {
+          recommendationId: '1',
+          text: 'rec 1',
+          afterMessageHash: msg1Hash,
+          createdAtTurn: 1,
+        },
+        {
+          recommendationId: '2',
+          text: 'rec 2',
+          afterMessageHash: msg2Hash,
+          createdAtTurn: 2,
+        },
       ];
 
       const injected = injectBlocks(
         prompt,
         blocks,
-        { placement: 'after-last-analyzed', as: 'user', keepLast: 'all', ttl: { type: 'none' }, template: '' },
-        speakerNames
+        {
+          placement: 'after-last-analyzed',
+          as: 'user',
+          keepLast: 'all',
+          ttl: { type: 'none' },
+          template: '',
+        },
+        speakerNames,
       );
 
       expect(injected.prompt).toHaveLength(5);
@@ -147,17 +217,33 @@ describe('AI SDK helpers', () => {
       const prompt: PromptMessageLike[] = [
         { role: 'user', content: 'only message' },
       ];
-      
+
       const blocks = [
-        { recommendationId: '1', text: 'old unanchored', afterMessageHash: 'missing', createdAtTurn: 1 },
-        { recommendationId: '2', text: 'new unanchored', afterMessageHash: 'also missing', createdAtTurn: 2 },
+        {
+          recommendationId: '1',
+          text: 'old unanchored',
+          afterMessageHash: 'missing',
+          createdAtTurn: 1,
+        },
+        {
+          recommendationId: '2',
+          text: 'new unanchored',
+          afterMessageHash: 'also missing',
+          createdAtTurn: 2,
+        },
       ];
 
       const injected = injectBlocks(
         prompt,
         blocks,
-        { placement: 'after-last-analyzed', as: 'user', keepLast: 'all', ttl: { type: 'none' }, template: '' },
-        speakerNames
+        {
+          placement: 'after-last-analyzed',
+          as: 'user',
+          keepLast: 'all',
+          ttl: { type: 'none' },
+          template: '',
+        },
+        speakerNames,
       );
 
       expect(injected.prompt).toHaveLength(2);
@@ -174,17 +260,33 @@ describe('AI SDK helpers', () => {
       const prompt: PromptMessageLike[] = [
         { role: 'user', content: 'only message' },
       ];
-      
+
       const blocks = [
-        { recommendationId: '1', text: 'rec A', afterMessageHash: msgHash, createdAtTurn: 1 },
-        { recommendationId: '2', text: 'rec B', afterMessageHash: msgHash, createdAtTurn: 1 },
+        {
+          recommendationId: '1',
+          text: 'rec A',
+          afterMessageHash: msgHash,
+          createdAtTurn: 1,
+        },
+        {
+          recommendationId: '2',
+          text: 'rec B',
+          afterMessageHash: msgHash,
+          createdAtTurn: 1,
+        },
       ];
 
       const injected = injectBlocks(
         prompt,
         blocks,
-        { placement: 'after-last-analyzed', as: 'user', keepLast: 'all', ttl: { type: 'none' }, template: '' },
-        speakerNames
+        {
+          placement: 'after-last-analyzed',
+          as: 'user',
+          keepLast: 'all',
+          ttl: { type: 'none' },
+          template: '',
+        },
+        speakerNames,
       );
 
       expect(injected.prompt).toHaveLength(2);
@@ -214,16 +316,15 @@ describe('AI SDK helpers', () => {
 
     it('appends skillPrompt to existing system prompt array content', () => {
       const prompt: PromptMessageLike[] = [
-        { role: 'system', content: [{ type: 'text', text: 'System instruction' }] },
+        {
+          role: 'system',
+          content: [{ type: 'text', text: 'System instruction' }],
+        },
         { role: 'user', content: 'hello' },
       ];
       const res = applySkillPrompt(prompt, 'Skill prompt');
       expect(res).toHaveLength(2);
-      expect(Array.isArray(res[0]!.content)).toBe(true);
-      expect(res[0]!.content).toEqual([
-        { type: 'text', text: 'System instruction' },
-        { type: 'text', text: '\n\nSkill prompt' },
-      ]);
+      expect(res[0]!.content).toBe('System instruction\n\nSkill prompt');
     });
 
     it('skips appending if skillPrompt is already present', () => {
@@ -236,16 +337,74 @@ describe('AI SDK helpers', () => {
     });
 
     it('prepends a new system prompt if absent', () => {
-      const prompt: PromptMessageLike[] = [
-        { role: 'user', content: 'hello' },
-      ];
+      const prompt: PromptMessageLike[] = [{ role: 'user', content: 'hello' }];
       const res = applySkillPrompt(prompt, 'Skill prompt');
       expect(res).toHaveLength(2);
       expect(res[0]).toEqual({
         role: 'system',
-        content: [{ type: 'text', text: 'Skill prompt' }],
+        content: 'Skill prompt',
       });
       expect(res[1]).toEqual({ role: 'user', content: 'hello' });
     });
   });
 });
+
+it.each(['system', 'developer'] as const)(
+  'uses valid provider instructions for injection role %s',
+  (as) => {
+    const prompt: PromptMessageLike[] = [{ role: 'user', content: 'hello' }];
+    const result = injectBlocks(
+      prompt,
+      [
+        {
+          recommendationId: 'id',
+          text: 'private',
+          afterMessageHash: hashMessage('Customer', 'hello'),
+          createdAtTurn: 1,
+        },
+      ],
+      {
+        as,
+        placement: 'end',
+        keepLast: 'all',
+        ttl: { type: 'none' },
+        template: '{analysis}',
+      },
+      { agent: 'Agent', customer: 'Customer' },
+    );
+    expect(result.prompt[1]).toEqual({ role: 'system', content: 'private' });
+    const guided = applySkillPrompt(prompt, 'guide');
+    expect(guided[0]).toEqual({ role: 'system', content: 'guide' });
+    expect(applySkillPrompt(guided, 'guide')).toBe(guided);
+  },
+);
+
+it.each([0, 1, 8])(
+  'preserves explicit speakerIndex %s through AI SDK collection and trimming',
+  (speakerIndex) => {
+    const prompt = [
+      {
+        role: 'assistant',
+        speakerIndex,
+        content: [{ type: 'text', text: 'prefix-current' }],
+      },
+    ];
+    const original = structuredClone(prompt);
+    expect(
+      collectMessages(
+        prompt,
+        { maxMessages: 1, maxInputChars: 7 },
+        { agent: 'Agent', customer: 'Customer' },
+        new Set(),
+      ),
+    ).toEqual([
+      {
+        speakerRole: 'user',
+        speakerName: 'Agent',
+        speakerIndex,
+        text: 'current',
+      },
+    ]);
+    expect(prompt).toEqual(original);
+  },
+);

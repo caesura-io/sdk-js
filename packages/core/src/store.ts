@@ -4,17 +4,14 @@ import type { CaesuraAnalysis } from './types.js';
 export interface StoredRecommendation {
   /** SDK-generated id (the backend `id` may be absent in non-persist mode). */
   id: string;
-  /** The full, raw analysis object as returned by the backend. */
+  /** The full, raw analysis value as returned by the backend. */
   analysis: CaesuraAnalysis;
   /** The exact rendered block text as injected, for self-exclusion on collect. */
   injectedText?: string;
-  /**
-   * Content hash (FNV-1a of speakerName + text) of the last collected message
-   * at the time this analysis was requested. Used by `buildAnalyzeMessages` to
-   * interleave analyses at the correct chronological position, independent of
-   * prompt index stability.
-   */
+  /** Legacy content hash, retained for custom stores and older recommendations. */
   afterMessageHash: string;
+  /** Fingerprint of the full dialogue prefix through the analyzed occurrence. */
+  afterMessageAnchor?: string;
   createdAtMs: number;
   createdAtTurn: number;
 }
@@ -22,7 +19,11 @@ export interface StoredRecommendation {
 /** Mutable per-conversation state held by the store. */
 export interface ConversationState {
   recommendations: StoredRecommendation[];
-  /** Increments on every middleware invocation for this conversation. */
+  /** Previously emitted guidance, including older merged renderings. Cleared with the session. */
+  injectedMessages?: { role: string; text: string }[];
+  /** Backend ID cached for automatic creation; removed with this state. */
+  backendConversationId?: string;
+  /** Increments on every engine observation for this conversation. */
   turn: number;
   /** Turn index of the last backend query (for cadence.everyTurns). */
   lastQueryTurn: number;
@@ -85,13 +86,13 @@ export class MemoryCaesuraStore implements CaesuraStore {
         lastAccessMs: Date.now(),
       };
       this.map.set(conversationId, s);
-      this.evictOverflow();
     } else {
       // Refresh recency: re-insert to move to the end (Map preserves order).
       s.lastAccessMs = Date.now();
       this.map.delete(conversationId);
       this.map.set(conversationId, s);
     }
+    this.evictOverflow(conversationId);
     return s;
   }
 
@@ -112,14 +113,16 @@ export class MemoryCaesuraStore implements CaesuraStore {
     if (this.maxIdleMs <= 0) return;
     const cutoff = Date.now() - this.maxIdleMs;
     for (const [id, s] of this.map) {
-      if (s.lastAccessMs < cutoff) this.map.delete(id);
+      if (!s.inFlight && s.lastAccessMs < cutoff) this.map.delete(id);
     }
   }
 
-  private evictOverflow(): void {
+  private evictOverflow(protectedId: string): void {
     while (this.map.size > this.maxConversations) {
-      // Map iteration order is insertion order; first key is the LRU.
-      const oldest = this.map.keys().next().value;
+      // Map iteration order is insertion order; first eligible key is the LRU.
+      const oldest = [...this.map].find(
+        ([id, state]) => id !== protectedId && !state.inFlight,
+      )?.[0];
       if (oldest === undefined) break;
       this.map.delete(oldest);
     }

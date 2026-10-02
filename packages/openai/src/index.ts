@@ -1,4 +1,6 @@
 export { createCaesura, withCaesura } from './wrapper.js';
+export type { CaesuraOpenAI } from './wrapper.js';
+export type { CreateConversationOptions } from '@caesura-io/core';
 export type { CaesuraOpenAIOptions } from './types.js';
 
 // Re-export utility functions and classes from core for developer convenience

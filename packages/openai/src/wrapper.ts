@@ -2,143 +2,156 @@
 import type OpenAI from 'openai';
 import {
   createCaesuraEngine,
+  knownInjectedMessages,
+  rememberInjectedMessage,
   selectActive,
   renderBlock,
   type CaesuraEvent,
 } from '@caesura-io/core';
-import type { CaesuraOpenAIOptions } from './types.js';
+import type { CaesuraOpenAI, CaesuraOpenAIOptions } from './types.js';
+export type { CaesuraOpenAI } from './types.js';
 import {
   collectOpenAIMessages,
+  stripInjectedOpenAIMessages,
   applySkillPromptOpenAI,
   injectBlocksOpenAI,
+  getMessageText,
 } from './adapters.js';
 
-export function createCaesura(openai: OpenAI, options: CaesuraOpenAIOptions): OpenAI {
+/** Delay delegation without assimilating the SDK's APIPromise and losing its helpers. */
+function deferRequest(pending: Promise<{ request: any }>): any {
+  const parsed = () => pending.then(({ request }) => request);
+  return {
+    then: (...args: any[]) => parsed().then(...args),
+    catch: (...args: any[]) => parsed().catch(...args),
+    finally: (...args: any[]) => parsed().finally(...args),
+    asResponse: () => pending.then(({ request }) => request.asResponse()),
+    withResponse: () => pending.then(({ request }) => request.withResponse()),
+    _thenUnwrap: (...args: any[]) =>
+      deferRequest(
+        pending.then(({ request }) => ({
+          request: request._thenUnwrap(...args),
+        })),
+      ),
+    [Symbol.toStringTag]: 'Promise',
+  };
+}
+
+export function createCaesura(
+  openai: OpenAI,
+  options: CaesuraOpenAIOptions,
+): CaesuraOpenAI {
   const engine = createCaesuraEngine(options);
   const cfg = engine.config;
 
   // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
   const wrapMethod = (originalFn: Function, isResponses: boolean) => {
-    return async function (this: any, body: any, requestOptions?: any) {
+    return function (this: any, body: any, requestOptions?: any) {
       if (!body) {
         return originalFn.call(this, body, requestOptions);
       }
 
-      // 1. Resolve conversationId
-      const perCallConvId = requestOptions?.caesura?.conversationId;
-      const convId = perCallConvId ?? cfg.conversationId ?? 'default';
+      const pending = (async () => {
+        // 1. Resolve conversationId
+        const perCallConvId = requestOptions?.caesura?.conversationId;
+        const convId = perCallConvId ?? cfg.conversationId ?? 'default';
 
-      // 2. Strip 'caesura' option from RequestOptions to avoid breaking other wrappers or the SDK itself
-      let cleanRequestOptions = requestOptions;
-      if (requestOptions && typeof requestOptions === 'object' && 'caesura' in requestOptions) {
-        const rest = { ...requestOptions };
-        delete rest.caesura;
-        cleanRequestOptions = rest;
-      }
-
-      // 3. Observe dialogue messages
-      const state = engine.store.get(convId);
-      state.turn += 1;
-      const now = Date.now();
-
-      const injectedTexts = new Set<string>();
-      for (const r of state.recommendations) {
-        if (r.injectedText) {
-          injectedTexts.add(r.injectedText);
+        // 2. Strip 'caesura' option from RequestOptions to avoid breaking other wrappers or the SDK itself
+        let cleanRequestOptions = requestOptions;
+        if (
+          requestOptions &&
+          typeof requestOptions === 'object' &&
+          'caesura' in requestOptions
+        ) {
+          const rest = { ...requestOptions };
+          delete rest.caesura;
+          cleanRequestOptions = rest;
         }
-      }
 
-      const messagesOrInput = isResponses ? body.input : body.messages;
-      const collected = collectOpenAIMessages(messagesOrInput, cfg.send, cfg.speakerNames, injectedTexts);
+        // 3. Observe dialogue messages
+        const state = engine.store.get(convId);
 
-      await engine.observe(convId, collected);
+        const injectedMessages = knownInjectedMessages(state, cfg.inject.as);
+        const messagesOrInput = stripInjectedOpenAIMessages(
+          isResponses ? body.input : body.messages,
+          injectedMessages,
+        );
+        const collected = collectOpenAIMessages(
+          messagesOrInput,
+          { maxMessages: 'all' },
+          cfg.speakerNames,
+          injectedMessages,
+        );
 
-      // 4. Inject recommendations and skill prompt
-      const active = selectActive(state, cfg.inject, now);
-      const modifiedBody = { ...body };
+        await engine.observe(convId, collected);
 
-      if (active.length > 0) {
+        // 4. Inject recommendations and skill prompt
+        const active = selectActive(state, cfg.inject, Date.now());
+        const modifiedBody = { ...body };
+
+        const targetKey = isResponses ? 'input' : 'messages';
+        const skill = applySkillPromptOpenAI(
+          messagesOrInput,
+          cfg.inject.skillPrompt,
+          isResponses ? (body.instructions ?? null) : undefined,
+        );
+        modifiedBody[targetKey] = skill.result;
+        if (isResponses && skill.instructions !== undefined)
+          modifiedBody.instructions = skill.instructions;
+
         const blocks = renderBlock(active, cfg.inject);
         if (blocks.length > 0) {
-          // A. Apply skill prompt
-          if (isResponses) {
-            const { result: newInput, instructions: newInstructions } = applySkillPromptOpenAI(
-              body.input,
-              cfg.inject.skillPrompt,
-              body.instructions,
-            );
-            modifiedBody.input = newInput;
-            if (newInstructions !== undefined) {
-              modifiedBody.instructions = newInstructions;
-            }
-          } else {
-            const { result: newMessages } = applySkillPromptOpenAI(
-              body.messages,
-              cfg.inject.skillPrompt,
-            );
-            modifiedBody.messages = newMessages;
-          }
-
-          // B. Inject blocks
-          const targetInputOrMessages = isResponses ? modifiedBody.input : modifiedBody.messages;
-          const { result: finalInputOrMessages, indices } = injectBlocksOpenAI(
-            targetInputOrMessages,
+          const { result, indices } = injectBlocksOpenAI(
+            modifiedBody[targetKey],
             blocks,
             cfg.inject,
             cfg.speakerNames,
+            injectedMessages,
           );
-
-          if (isResponses) {
-            modifiedBody.input = finalInputOrMessages;
-          } else {
-            modifiedBody.messages = finalInputOrMessages;
-          }
-
-          for (let i = 0; i < active.length; i++) {
-            active[i]!.injectedText = blocks[i]!.text;
-          }
-
+          modifiedBody[targetKey] = result;
+          const injected = blocks.flatMap((block, i) => {
+            const index = indices[i]!;
+            if (index < 0) return [];
+            const rec = active.find((r) => r.id === block.recommendationId)!;
+            rec.injectedText = getMessageText(
+              (result as any[])[index]?.content,
+            );
+            rememberInjectedMessage(
+              state,
+              (result as any[])[index].role,
+              rec.injectedText,
+            );
+            return [
+              {
+                recommendationId: block.recommendationId,
+                text: block.text,
+                index,
+              },
+            ];
+          });
           engine.emitEvent({
             type: 'injected',
             conversationId: convId,
             turn: state.turn,
-            blocks: blocks.map((b, i) => ({
-              recommendationId: b.recommendationId,
-              text: b.text,
-              index: indices[i]!,
-            })),
+            blocks: injected,
             placement: cfg.inject.placement,
           } as CaesuraEvent);
         }
-      } else {
-        // Even if no recommendations are active, apply skill prompt if present
-        if (isResponses) {
-          const { result: newInput, instructions: newInstructions } = applySkillPromptOpenAI(
-            body.input,
-            cfg.inject.skillPrompt,
-            body.instructions,
-          );
-          modifiedBody.input = newInput;
-          if (newInstructions !== undefined) {
-            modifiedBody.instructions = newInstructions;
-          }
-        } else {
-          const { result: newMessages } = applySkillPromptOpenAI(
-            body.messages,
-            cfg.inject.skillPrompt,
-          );
-          modifiedBody.messages = newMessages;
-        }
-      }
 
-      // 5. Call original method
-      return originalFn.call(this, modifiedBody, cleanRequestOptions);
+        // 5. Call original method
+        return {
+          request: originalFn.call(this, modifiedBody, cleanRequestOptions),
+        };
+      })();
+      return deferRequest(pending);
     };
   };
 
   const makeProxy = (target: any, path: string[]): any => {
     return new Proxy(target, {
       get(obj, prop) {
+        if (path.length === 0 && prop === 'createConversation')
+          return engine.createConversation;
         if (typeof prop === 'symbol') {
           return Reflect.get(obj, prop);
         }
@@ -154,7 +167,7 @@ export function createCaesura(openai: OpenAI, options: CaesuraOpenAIOptions): Op
           currentPath[2] === 'create' &&
           typeof value === 'function'
         ) {
-          return wrapMethod(value, false);
+          return wrapMethod(value.bind(obj), false);
         }
 
         // Intercept client.responses.create
@@ -164,7 +177,7 @@ export function createCaesura(openai: OpenAI, options: CaesuraOpenAIOptions): Op
           currentPath[1] === 'create' &&
           typeof value === 'function'
         ) {
-          return wrapMethod(value, true);
+          return wrapMethod(value.bind(obj), true);
         }
 
         if (value !== null && typeof value === 'object') {

@@ -6,13 +6,20 @@ export { createCaesuraEngine, resolveConfig } from './engine.js';
 export { DEFAULT_TEMPLATE, DEFAULT_SKILL_PROMPT } from './defaults.js';
 export {
   hashMessage,
+  dialogueAnchors,
+  limitMessages,
   buildAnalyzeMessages,
   selectActive,
   renderAnalysis,
   renderBlock,
   stringifyValue,
 } from './helpers.js';
-export type { AnalyzeMessage, AnalyzeRequestBody, AnalyzeResult } from './client.js';
+export type {
+  AnalyzeMessage,
+  AnalyzeRequestBody,
+  AnalyzeResult,
+  CreateConversationOptions,
+} from './client.js';
 export type {
   CaesuraStore,
   ConversationState,
@@ -37,3 +44,10 @@ export type {
   CaesuraEvent,
   ResolvedConfig,
 } from './types.js';
+
+export {
+  injectedMessageKey,
+  knownInjectedMessages,
+  rememberInjectedMessage,
+  isInjectedMessage,
+} from './injections.js';

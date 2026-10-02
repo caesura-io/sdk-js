@@ -10,24 +10,14 @@ export type Placement = 'after-last-analyzed' | 'end';
 /** Which role the injected recommendation message uses. */
 export type InjectAs = 'user' | 'system' | 'assistant' | 'developer';
 
-/**
- * The analysis object returned by the Caesura backend.
- *
- * Intentionally open-ended: different call types may return different fields
- * now or in the future (the backend spreads `...parsedResponse`). Only the
- * stable, cross-call-type fields are typed explicitly.
- *
- * Note: the deprecated `actionItem` field is intentionally NOT included.
- * `recommendation` is the canonical field.
- */
-export interface CaesuraAnalysis {
-  observation?: string;
-  recommendation?: string;
-  sentiment?: string;
-  isSame?: boolean;
-  id?: number;
-  [key: string]: unknown;
-}
+/** The unmodified JSON value or plain text returned by CaesuraO. */
+export type CaesuraAnalysis =
+  | Record<string, unknown>
+  | unknown[]
+  | string
+  | number
+  | boolean
+  | null;
 
 /** Speaker labels sent to the backend for each dialogue role. */
 export interface SpeakerNames {
@@ -47,11 +37,12 @@ export interface CadenceConfig {
 
 /** Controls what dialogue window the SDK sends to the backend. */
 export interface SendConfig {
-  /** Last N messages, or 'all' for the whole conversation. Default: 10. */
+  /** Maximum outbound messages including analysis history. Dialogue has priority. Default: 10. */
   maxMessages?: number | 'all';
   /**
-   * Cap total characters of the collected window. Trims from the START
-   * (oldest first), because the latest messages matter most.
+   * Cap Unicode code points across dialogue and serialized analysis history.
+   * Keep newest dialogue and a suffix of the oldest retained message; then
+   * fit whole analyses newest-first, stopping at the first that cannot fit.
    * Default: undefined (no cap).
    */
   maxInputChars?: number;
@@ -65,7 +56,7 @@ export type TtlPolicy =
 
 /** Controls how/where recommendations are injected into the model context. */
 export interface InjectConfig {
-  /** Where to splice the recommendation. Default: 'end'. */
+  /** Where to splice the recommendation. Default: 'after-last-analyzed'. */
   placement?: Placement;
   /** Which role to inject as. Default: 'user' (avoids a second system prompt). */
   as?: InjectAs;
@@ -75,15 +66,15 @@ export interface InjectConfig {
   ttl?: TtlPolicy;
   /**
    * Template for rendering an analysis. Supports:
-   *   {analysis}            -> JSON.stringify(analysis)
+   *   {analysis}            -> full value (objects/arrays as JSON)
    *   {analysis.recommendation}, {analysis.observation}, {analysis.anyField}
    * Missing fields resolve to '' and their line is trimmed.
-   * Default: 'New recommendation:\n{analysis.recommendation}'.
+   * Default: 'CONVERSATION ANALYSIS:\n{analysis}'.
    */
   template?: string;
   /**
    * Optional system-prompt-style "skill" describing how the agent should
-   * react to recommendations. Prepended once to the rendered block.
+   * react to recommendations. Added once to system/developer instructions.
    */
   skillPrompt?: string;
 }
@@ -108,8 +99,8 @@ export interface CaesuraConfig {
   /** API key. Falls back to process.env.CAESURA_API_KEY if omitted. */
   apiKey?: string;
 
-  /** Base URL incl. subdomain (environment), e.g. https://dev.caesura.io */
-  baseUrl: string;
+  /** API URL override. Defaults to https://api.caesurao.com; environment follows the account. */
+  baseUrl?: string;
 
   /** Call type / preset discriminator sent to the backend. */
   callType?: string;
@@ -125,13 +116,16 @@ export interface CaesuraConfig {
 
   /**
    * Whether the backend should persist this conversation/analysis.
-   * Default: false (SDK mode). Set true only if you want server-side storage.
+   * Default: true. Requires an existing backend conversation ID or automatic creation.
    */
   persist?: boolean;
 
-  /** Run server-side cosine-similarity dedup. Default: true. */
+  /** Map local session labels to backend conversations automatically. Default: false. */
+  autoCreateConversation?: boolean;
+
+  /** Calculate server-side cosine similarities. Default: true; does not set a suppression threshold. */
   calculateSimilarities?: boolean;
-  /** Cosine similarity threshold for SAME detection. */
+  /** Opt-in cosine similarity threshold for SAME suppression; omitted by default. */
   similarityThreshold?: number;
 
   /** Speaker labels. Defaults: { agent: 'Agent', customer: 'Customer' }. */
@@ -177,9 +171,11 @@ export type CaesuraEvent =
       type: 'response';
       conversationId: string;
       queryTurn: number;
-      /** The full analysis object returned (open shape). */
+      /** The full, unmodified analysis value. */
       analysis: CaesuraAnalysis;
       creditUsage?: number;
+      /** Boolean deduplication metadata, separate from the unmodified payload. */
+      isSame?: boolean;
       /** Wall-clock duration of the analyze call. */
       durationMs: number;
     }
@@ -200,7 +196,7 @@ export type CaesuraEvent =
       type: 'deduped';
       conversationId: string;
       queryTurn: number;
-      /** isSame / empty recommendation -> nothing buffered. */
+      /** Explicit duplicate or empty payload -> nothing buffered. */
     }
   | {
       type: 'injected';
@@ -229,12 +225,14 @@ export interface ResolvedConfig {
   mode: CaesuraMode;
   conversationId?: string;
   persist: boolean;
+  autoCreateConversation: boolean;
   calculateSimilarities: boolean;
   similarityThreshold?: number;
   speakerNames: Required<SpeakerNames>;
   cadence: Required<CadenceConfig>;
   send: Required<Pick<SendConfig, 'maxMessages'>> & SendConfig;
-  inject: Required<Omit<InjectConfig, 'skillPrompt'>> & Pick<InjectConfig, 'skillPrompt'>;
+  inject: Required<Omit<InjectConfig, 'skillPrompt'>> &
+    Pick<InjectConfig, 'skillPrompt'>;
   timeoutMs: number;
   onError: (err: unknown) => void;
   includeCreditUsage: boolean;

@@ -16,7 +16,7 @@ describe('caesuraMiddleware credit callback integration', () => {
   });
 
   it('fires onCreditUsage callback when credits are reported in response', async () => {
-    const headers = new Headers();
+    const headers = new Headers({ 'content-type': 'application/json' });
     headers.set('content-type', 'application/json');
     headers.set('X-Credit-Usage', '42');
 
@@ -58,7 +58,7 @@ describe('caesuraMiddleware credit callback integration', () => {
   });
 
   it('routes callback errors to onError without breaking the middleware flow', async () => {
-    const headers = new Headers();
+    const headers = new Headers({ 'content-type': 'application/json' });
     headers.set('content-type', 'application/json');
     headers.set('X-Credit-Usage', '10');
 
@@ -99,7 +99,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
   describe('observability onEvent hook', () => {
     it('emits correct sequence of events on a normal successful turn with injection', async () => {
-      const headers = new Headers();
+      const headers = new Headers({ 'content-type': 'application/json' });
       headers.set('content-type', 'application/json');
       headers.set('X-Credit-Usage', '5');
 
@@ -142,7 +142,10 @@ describe('caesuraMiddleware credit callback integration', () => {
       expect(events[1].type).toBe('response');
       expect(events[1].conversationId).toBe('test-obs');
       expect(events[1].queryTurn).toBe(1);
-      expect(events[1].analysis).toEqual({ recommendation: 'useful advice', isSame: false });
+      expect(events[1].analysis).toEqual({
+        recommendation: 'useful advice',
+        isSame: false,
+      });
       expect(events[1].creditUsage).toBe(5);
       expect(events[1].durationMs).toBeGreaterThanOrEqual(0);
 
@@ -174,10 +177,12 @@ describe('caesuraMiddleware credit callback integration', () => {
       await middlewareNoMsgs.transformParams!({
         params: { prompt: [] },
       } as any);
-      expect(events[events.length - 1]).toEqual(expect.objectContaining({
-        type: 'skipped',
-        reason: 'no-messages',
-      }));
+      expect(events[events.length - 1]).toEqual(
+        expect.objectContaining({
+          type: 'skipped',
+          reason: 'no-messages',
+        }),
+      );
 
       // 2. cadence-turns reason
       const middlewareTurns = caesuraMiddleware({
@@ -190,7 +195,7 @@ describe('caesuraMiddleware credit callback integration', () => {
       });
       fetchMock.mockResolvedValueOnce({
         ok: true,
-        headers: new Headers(),
+        headers: new Headers({ 'content-type': 'application/json' }),
         json: async () => ({ recommendation: 'ok' }),
       });
       // Turn 1: queries
@@ -203,16 +208,24 @@ describe('caesuraMiddleware credit callback integration', () => {
       // Turn 2: skips because everyTurns is 2 and only 1 turn has passed since query
       await middlewareTurns.transformParams!({
         params: {
-          prompt: [{ role: 'user', content: 'test' }, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'test2' }],
+          prompt: [
+            { role: 'user', content: 'test' },
+            { role: 'assistant', content: 'ok' },
+            { role: 'user', content: 'test2' },
+          ],
           providerOptions: { caesura: { conversationId: 'conv-turns' } },
         },
       } as any);
-      const skippedTurns = events.find((e) => e.type === 'skipped' && e.conversationId === 'conv-turns');
-      expect(skippedTurns).toEqual(expect.objectContaining({
-        type: 'skipped',
-        conversationId: 'conv-turns',
-        reason: 'cadence-turns',
-      }));
+      const skippedTurns = events.find(
+        (e) => e.type === 'skipped' && e.conversationId === 'conv-turns',
+      );
+      expect(skippedTurns).toEqual(
+        expect.objectContaining({
+          type: 'skipped',
+          conversationId: 'conv-turns',
+          reason: 'cadence-turns',
+        }),
+      );
       // 3. cadence-seconds reason
       const middlewareSecs = caesuraMiddleware({
         baseUrl: 'http://localhost:3000',
@@ -224,7 +237,7 @@ describe('caesuraMiddleware credit callback integration', () => {
       });
       fetchMock.mockResolvedValueOnce({
         ok: true,
-        headers: new Headers(),
+        headers: new Headers({ 'content-type': 'application/json' }),
         json: async () => ({ recommendation: 'ok' }),
       });
       await middlewareSecs.transformParams!({
@@ -235,16 +248,24 @@ describe('caesuraMiddleware credit callback integration', () => {
       } as any);
       await middlewareSecs.transformParams!({
         params: {
-          prompt: [{ role: 'user', content: 'test' }, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'test2' }],
+          prompt: [
+            { role: 'user', content: 'test' },
+            { role: 'assistant', content: 'ok' },
+            { role: 'user', content: 'test2' },
+          ],
           providerOptions: { caesura: { conversationId: 'conv-secs' } },
         },
       } as any);
-      const skippedSecs = events.find((e) => e.type === 'skipped' && e.conversationId === 'conv-secs');
-      expect(skippedSecs).toEqual(expect.objectContaining({
-        type: 'skipped',
-        conversationId: 'conv-secs',
-        reason: 'cadence-seconds',
-      }));
+      const skippedSecs = events.find(
+        (e) => e.type === 'skipped' && e.conversationId === 'conv-secs',
+      );
+      expect(skippedSecs).toEqual(
+        expect.objectContaining({
+          type: 'skipped',
+          conversationId: 'conv-secs',
+          reason: 'cadence-seconds',
+        }),
+      );
 
       // 4. in-flight reason
       const convState = store.get('conv-inflight');
@@ -262,17 +283,19 @@ describe('caesuraMiddleware credit callback integration', () => {
           providerOptions: { caesura: { conversationId: 'conv-inflight' } },
         },
       } as any);
-      expect(events[events.length - 1]).toEqual(expect.objectContaining({
-        type: 'skipped',
-        conversationId: 'conv-inflight',
-        reason: 'in-flight',
-      }));
+      expect(events[events.length - 1]).toEqual(
+        expect.objectContaining({
+          type: 'skipped',
+          conversationId: 'conv-inflight',
+          reason: 'in-flight',
+        }),
+      );
     });
 
     it('emits deduped event on duplicate analysis response', async () => {
       fetchMock.mockResolvedValue({
         ok: true,
-        headers: new Headers(),
+        headers: new Headers({ 'content-type': 'application/json' }),
         json: async () => ({ isSame: true }),
       });
 
@@ -300,13 +323,15 @@ describe('caesuraMiddleware credit callback integration', () => {
 
     it('emits injected event when recommendations are injected', async () => {
       const store = new MemoryCaesuraStore();
-      store.add('test-inject', [{
-        id: 'rec-1',
-        analysis: { recommendation: 'do something' },
-        afterMessageHash: 'placeholder',
-        createdAtMs: Date.now(),
-        createdAtTurn: 1,
-      }]);
+      store.add('test-inject', [
+        {
+          id: 'rec-1',
+          analysis: { recommendation: 'do something' },
+          afterMessageHash: 'placeholder',
+          createdAtMs: Date.now(),
+          createdAtTurn: 1,
+        },
+      ]);
 
       const events: any[] = [];
       const onEvent = vi.fn((e) => events.push(e));
@@ -322,7 +347,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
       fetchMock.mockResolvedValue({
         ok: true,
-        headers: new Headers(),
+        headers: new Headers({ 'content-type': 'application/json' }),
         json: async () => ({ isSame: true }),
       });
 
@@ -341,7 +366,7 @@ describe('caesuraMiddleware credit callback integration', () => {
       expect(injectedEvent.blocks[0]!.index).toBe(2);
     });
 
-    it('emits error event when Caesura backend client call fails', async () => {
+    it('emits error event when CaesuraO backend client call fails', async () => {
       fetchMock.mockRejectedValue(new Error('Network failure'));
 
       const events: any[] = [];
@@ -372,7 +397,7 @@ describe('caesuraMiddleware credit callback integration', () => {
     it('protects main thread: error inside onEvent callback does not crash middleware', async () => {
       fetchMock.mockResolvedValue({
         ok: true,
-        headers: new Headers(),
+        headers: new Headers({ 'content-type': 'application/json' }),
         json: async () => ({ isSame: true }),
       });
 
@@ -401,5 +426,130 @@ describe('caesuraMiddleware credit callback integration', () => {
       expect(onError).toHaveBeenCalled();
       expect(onError.mock.calls[0][0].message).toBe('Logger failure');
     });
+  });
+});
+
+describe('middleware review regressions', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each(['generate', 'stream'] as const)(
+    'supports %s with conversation creation, dialogue filtering, and tool ordering',
+    async (type) => {
+      const fetcher = vi
+        .fn()
+        .mockResolvedValueOnce(Response.json({ id: 'backend' }))
+        .mockResolvedValueOnce(
+          Response.json({ emoji: '😊', latest_speaker: 'Visitor' }),
+        );
+      vi.stubGlobal('fetch', fetcher);
+      const events: any[] = [];
+      const store = new MemoryCaesuraStore();
+      const middleware = caesuraMiddleware({
+        apiKey: 'key',
+        mode: 'sync',
+        store,
+        onEvent: (e) => events.push(e),
+        speakerNames: { agent: 'Support', customer: 'Visitor' },
+        inject: { skillPrompt: 'Private guidance', as: 'user' },
+      });
+      const conversationId = await middleware.createConversation({
+        name: 'Support',
+      });
+      const prompt = [
+        { role: 'system', content: 'Original instructions' },
+        { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'checking' },
+            { type: 'tool-call', toolCallId: 'a' },
+            { type: 'tool-call', toolCallId: 'b' },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            { type: 'tool-result', toolCallId: 'a', result: 'secret' },
+            { type: 'tool-result', toolCallId: 'b', result: 'secret' },
+          ],
+        },
+      ];
+      const params = {
+        prompt,
+        providerOptions: { caesura: { conversationId } },
+      };
+      const before = structuredClone(params);
+      const result = await middleware.transformParams!({
+        type,
+        params,
+        model: {},
+      });
+      expect(params).toEqual(before);
+      expect(result.prompt[0].content).toBe(
+        'Original instructions\n\nPrivate guidance',
+      );
+      expect(result.prompt.slice(2, 4)).toEqual(prompt.slice(2));
+      expect(result.prompt[4].content[0].text).toContain('😊');
+      expect(events.find((e) => e.type === 'injected').blocks[0].index).toBe(4);
+      expect(JSON.parse(fetcher.mock.calls[1]![1].body).messages).toEqual([
+        {
+          speakerRole: 'user',
+          speakerName: 'Visitor',
+          speakerIndex: 1,
+          text: 'hello',
+        },
+        {
+          speakerRole: 'user',
+          speakerName: 'Support',
+          speakerIndex: 0,
+          text: 'checking',
+        },
+      ]);
+      expect(store.get(conversationId).turn).toBe(1);
+    },
+  );
+
+  it('tool-only input triggers neither creation nor analysis', async () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const middleware = caesuraMiddleware({
+      apiKey: 'key',
+      autoCreateConversation: true,
+    });
+    await middleware.transformParams!({
+      type: 'generate',
+      params: {
+        prompt: [
+          {
+            role: 'assistant',
+            content: [{ type: 'tool-call', toolCallId: 'a' }],
+          },
+          { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'a' }] },
+        ],
+      },
+      model: {},
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('survives creation and callback failures in the model path', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const fail = () => {
+      throw new Error('hook');
+    };
+    const middleware = caesuraMiddleware({
+      apiKey: 'key',
+      autoCreateConversation: true,
+      mode: 'sync',
+      onError: fail,
+      onEvent: fail,
+    });
+    await expect(
+      middleware.transformParams!({
+        type: 'stream',
+        params: { prompt: [{ role: 'user', content: 'hello' }] },
+        model: {},
+      }),
+    ).resolves.toHaveProperty('prompt');
   });
 });

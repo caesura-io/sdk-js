@@ -1,6 +1,9 @@
 import type { PromptMessageLike, TextPartLike } from './internal/ai-types.js';
 import {
   hashMessage,
+  isInjectedMessage,
+  dialogueAnchors,
+  limitMessages,
   type AnalyzeMessage,
   type InjectConfig,
   type ResolvedConfig,
@@ -20,49 +23,62 @@ export {
 export function messageText(content: PromptMessageLike['content']): string {
   if (typeof content === 'string') return content;
   return content
-    .filter((p): p is TextPartLike => p.type === 'text' && typeof (p as TextPartLike).text === 'string')
+    .filter(
+      (p): p is TextPartLike =>
+        p.type === 'text' && typeof (p as TextPartLike).text === 'string',
+    )
     .map((p) => p.text)
     .join('');
+}
+
+/** Remove recognized prior SDK guidance before collecting or reinjecting. */
+export function stripInjectedMessages(
+  prompt: PromptMessageLike[],
+  known: ReadonlySet<string>,
+): PromptMessageLike[] {
+  return prompt.filter(
+    (message) =>
+      !isInjectedMessage(message, messageText(message.content), known),
+  );
 }
 
 type CollectedMessage = AnalyzeMessage;
 
 /**
- * Collect the dialogue window to send. Maps roles to assistant/user, labels
+ * Collect the dialogue window to send. Maps both dialogue roles to user, labels
  * speakers, applies maxMessages, then char-trims from the START.
  */
 export function collectMessages(
   prompt: PromptMessageLike[],
   send: Required<Pick<SendConfig, 'maxMessages'>> & SendConfig,
   speakers: ResolvedConfig['speakerNames'],
-  injectedTexts: ReadonlySet<string>,
+  injectedMessages: ReadonlySet<string>,
 ): CollectedMessage[] {
-  let msgs: CollectedMessage[] = prompt
+  let msgs: CollectedMessage[] = stripInjectedMessages(prompt, injectedMessages)
     .filter((m) => m.role === 'user' || m.role === 'assistant')
     .map((m) => {
       const text = messageText(m.content);
       return {
+        // Both participants are input to the analysis prompt.
         speakerRole: 'user' as const,
-        speakerName: m.role === 'assistant' ? speakers.agent : speakers.customer,
+        speakerIndex:
+          typeof m.speakerIndex === 'number'
+            ? m.speakerIndex
+            : m.role === 'assistant'
+              ? 0
+              : 1,
+        speakerName:
+          typeof m.name === 'string'
+            ? m.name
+            : m.role === 'assistant'
+              ? speakers.agent
+              : speakers.customer,
         text,
       };
     })
-    .filter((c) => !injectedTexts.has(c.text)); // skip our own injected blocks
+    .filter((c) => c.text.trim() !== '');
 
-  if (send.maxMessages !== 'all') {
-    msgs = msgs.slice(-send.maxMessages);
-  }
-
-  if (send.maxInputChars != null) {
-    let total = msgs.reduce((n, c) => n + c.text.length, 0);
-    while (total > send.maxInputChars && msgs.length > 1) {
-      total -= msgs[0]!.text.length;
-      msgs.shift();
-    }
-    if (msgs.length === 1 && msgs[0]!.text.length > send.maxInputChars) {
-      msgs[0] = { ...msgs[0]!, text: msgs[0]!.text.slice(-send.maxInputChars) };
-    }
-  }
+  msgs = limitMessages(msgs, send);
 
   return msgs;
 }
@@ -70,20 +86,34 @@ export function collectMessages(
 /**
  * Splice the rendered block into the prompt as a new message.
  * 'end' appends. 'after-last-analyzed' inserts right after the last prompt
- * message whose text starts with the last analyzed message's text; falls back
- * to 'end' if not found.
+ * analyzed occurrence. Unmatched latest guidance is prepended as context.
  */
 export interface InjectBlockResult {
   prompt: PromptMessageLike[];
   indices: number[]; // The array index where each block landed
 }
 
+function injectionMessage(role: string, text: string): PromptMessageLike {
+  // Provider-level AI SDK prompts represent instructions as system strings.
+  if (role === 'system' || role === 'developer')
+    return { role: 'system', content: text };
+  return { role, content: [{ type: 'text', text }] };
+}
+
 export function injectBlocks(
   prompt: PromptMessageLike[],
-  blocks: { recommendationId: string; text: string; afterMessageHash: string; createdAtTurn: number }[],
+  blocks: {
+    recommendationId: string;
+    text: string;
+    afterMessageHash: string;
+    afterMessageAnchor?: string;
+    createdAtTurn: number;
+  }[],
   inject: Required<Omit<InjectConfig, 'skillPrompt'>>,
   speakerNames: Required<SpeakerNames>,
+  injectedMessages: ReadonlySet<string> = new Set(),
 ): InjectBlockResult {
+  prompt = stripInjectedMessages(prompt, injectedMessages);
   if (blocks.length === 0) return { prompt, indices: [] };
 
   if (inject.placement === 'end') {
@@ -91,28 +121,38 @@ export function injectBlocks(
     const newPrompt = [...prompt];
     const indices: number[] = [];
     for (const b of blocks) {
-      newPrompt.push({ role: inject.as, content: [{ type: 'text', text: b.text }] });
+      newPrompt.push(injectionMessage(inject.as, b.text));
       indices.push(newPrompt.length - 1);
     }
     return { prompt: newPrompt, indices };
   }
 
   // placement === 'after-last-analyzed' -> interleave them chronologically
-  // 1. Hash the prompt
+  // Use the same collection rules as observation, retaining provider indices.
+  const dialogue: AnalyzeMessage[] = [];
+  const dialoguePositions: number[] = [];
   const hashToPositions = new Map<string, number[]>();
   for (let i = 0; i < prompt.length; i++) {
-    const msg = prompt[i]!;
-    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
-    const speakerName = msg.role === 'user' ? speakerNames.customer : speakerNames.agent;
-    const text = messageText(msg.content);
-    const hash = hashMessage(speakerName, text);
-    let positions = hashToPositions.get(hash);
-    if (!positions) {
-      positions = [];
-      hashToPositions.set(hash, positions);
-    }
+    const [message] = collectMessages(
+      [prompt[i]!],
+      { maxMessages: 'all' },
+      speakerNames,
+      new Set(), // Guidance was already stripped; string input is fresh dialogue.
+    );
+    if (!message) continue;
+    dialogue.push(message);
+    dialoguePositions.push(i);
+    const hash = hashMessage(message.speakerName ?? '', message.text);
+    const positions = hashToPositions.get(hash) ?? [];
     positions.push(i);
+    hashToPositions.set(hash, positions);
   }
+  const anchorToPosition = new Map(
+    dialogueAnchors(dialogue).map((anchor, i) => [
+      anchor,
+      dialoguePositions[i]!,
+    ]),
+  );
 
   // 2. Map blocks to indices backwards by turn
   const turnGroups = new Map<number, typeof blocks>();
@@ -134,12 +174,21 @@ export function injectBlocks(
     // All blocks in a turn share the same anchor
     const afterHash = groupBlocks[0]!.afterMessageHash;
     const positions = hashToPositions.get(afterHash);
-    const pos = positions && positions.length > 0 ? positions.pop() : undefined;
+    const anchor = groupBlocks[0]!.afterMessageAnchor;
+    const pos =
+      anchor !== undefined ? anchorToPosition.get(anchor) : positions?.pop();
 
     if (pos !== undefined) {
       // Insert *after* the anchor message
       for (const b of groupBlocks) {
-        insertions.push({ index: pos + 1, text: b.text, blockIndex: blocks.indexOf(b) });
+        let boundary = pos + 1;
+        while (boundary < prompt.length && prompt[boundary]?.role === 'tool')
+          boundary++;
+        insertions.push({
+          index: boundary,
+          text: b.text,
+          blockIndex: blocks.indexOf(b),
+        });
       }
     } else {
       if (latestUnanchoredTurn === undefined) {
@@ -152,12 +201,19 @@ export function injectBlocks(
     // Prepend at index 0
     const groupBlocks = turnGroups.get(latestUnanchoredTurn)!;
     for (const b of groupBlocks) {
-      insertions.push({ index: 0, text: b.text, blockIndex: blocks.indexOf(b) });
+      insertions.push({
+        index: 0,
+        text: b.text,
+        blockIndex: blocks.indexOf(b),
+      });
     }
   }
 
   // Group insertions by index so we can merge texts at the same index
-  const groupedInsertions = new Map<number, { texts: string[]; blockIndices: number[] }>();
+  const groupedInsertions = new Map<
+    number,
+    { texts: string[]; blockIndices: number[] }
+  >();
   for (const ins of insertions) {
     let group = groupedInsertions.get(ins.index);
     if (!group) {
@@ -169,7 +225,9 @@ export function injectBlocks(
   }
 
   // 3. Splice into prompt in a forward pass, updating offsets
-  const sortedIndices = Array.from(groupedInsertions.keys()).sort((a, b) => a - b);
+  const sortedIndices = Array.from(groupedInsertions.keys()).sort(
+    (a, b) => a - b,
+  );
   let newPrompt = [...prompt];
   const finalIndices: number[] = new Array(blocks.length).fill(-1);
   let offset = 0;
@@ -178,12 +236,18 @@ export function injectBlocks(
     const group = groupedInsertions.get(index)!;
 
     // Sort blockIndices so texts are joined chronologically
-    const sortedGroup = group.blockIndices.map((bi, i) => ({ bi, text: group.texts[i]! })).sort((a, b) => a.bi - b.bi);
-    const mergedText = sortedGroup.map(g => g.text).join('\n\n');
+    const sortedGroup = group.blockIndices
+      .map((bi, i) => ({ bi, text: group.texts[i]! }))
+      .sort((a, b) => a.bi - b.bi);
+    const mergedText = sortedGroup.map((g) => g.text).join('\n\n');
 
     const insertPos = index + offset;
-    const msg: PromptMessageLike = { role: inject.as, content: [{ type: 'text', text: mergedText }] };
-    newPrompt = [...newPrompt.slice(0, insertPos), msg, ...newPrompt.slice(insertPos)];
+    const msg = injectionMessage(inject.as, mergedText);
+    newPrompt = [
+      ...newPrompt.slice(0, insertPos),
+      msg,
+      ...newPrompt.slice(insertPos),
+    ];
 
     for (const { bi } of sortedGroup) {
       finalIndices[bi] = insertPos;
@@ -217,10 +281,7 @@ export function applySkillPrompt(
       return prompt;
     }
 
-    const newContent =
-      typeof currentContent === 'string'
-        ? `${currentContent}\n\n${skillPrompt}`
-        : [...(Array.isArray(currentContent) ? currentContent : []), { type: 'text', text: `\n\n${skillPrompt}` }];
+    const newContent = `${currentText}\n\n${skillPrompt}`;
 
     const newSysMsg: PromptMessageLike = {
       ...sysMsg,
@@ -233,7 +294,7 @@ export function applySkillPrompt(
   } else {
     const newSysMsg: PromptMessageLike = {
       role: 'system',
-      content: [{ type: 'text', text: skillPrompt }],
+      content: skillPrompt,
     };
     return [newSysMsg, ...prompt];
   }

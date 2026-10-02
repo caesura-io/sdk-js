@@ -126,7 +126,10 @@ describe('createCreditMeter', () => {
 
     // But eventList has only 2 elements, and first one (rec-1) is evicted
     expect(meter.events()).toHaveLength(2);
-    expect(meter.events().map(e => e.recommendationId)).toEqual(['rec-2', 'rec-3']);
+    expect(meter.events().map((e) => e.recommendationId)).toEqual([
+      'rec-2',
+      'rec-3',
+    ]);
     expect(meter.byRecommendationId('rec-1')).toBeUndefined();
     expect(meter.byRecommendationId('rec-2')).toEqual(info2);
     expect(meter.byRecommendationId('rec-3')).toEqual(info3);
@@ -156,7 +159,7 @@ describe('createCreditMeter', () => {
     expect(meter.total()).toBe(20);
     expect(meter.totalByConversation('conv-1')).toBe(0);
     expect(meter.totalByConversation('conv-2')).toBe(20);
-    expect(meter.events().map(e => e.recommendationId)).toEqual(['rec-2']);
+    expect(meter.events().map((e) => e.recommendationId)).toEqual(['rec-2']);
     expect(meter.byRecommendationId('rec-1')).toBeUndefined();
     expect(meter.byRecommendationId('rec-2')).toBeDefined();
 
@@ -192,3 +195,27 @@ describe('createCreditMeter', () => {
     });
   });
 });
+
+it.each([true, false])(
+  'counts stay cumulative with keepEvents=%s',
+  (keepEvents) => {
+    const meter = createCreditMeter({ keepEvents, maxEvents: 1 });
+    for (let i = 0; i < 3; i++)
+      meter.record({
+        credits: 2,
+        conversationId: 'session',
+        isSame: i === 0,
+        queryTurn: i,
+        timestampMs: i,
+      });
+    expect(meter.count()).toBe(3);
+    expect(meter.count({ conversationId: 'session' })).toBe(3);
+    expect(meter.count({ isSame: true })).toBe(1);
+    expect(meter.count({ conversationId: 'session', isSame: false })).toBe(2);
+    expect(meter.total()).toBe(6);
+    expect(meter.events()).toHaveLength(keepEvents ? 1 : 0);
+    meter.reset('session');
+    expect(meter.count()).toBe(0);
+    expect(meter.total()).toBe(0);
+  },
+);

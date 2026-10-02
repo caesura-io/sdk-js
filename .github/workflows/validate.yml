@@ -1,0 +1,56 @@
+name: Validate SDKs
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Lowest supported release and newest release of every supported major.
+          - { openai: '4.87.3', ai: '7' }
+          - { openai: '4', ai: '7' }
+          - { openai: '5.0.0', ai: '7' }
+          - { openai: '5', ai: '7' }
+          - { openai: '6.0.0', ai: '7' }
+          - { openai: '6', ai: '7' }
+          - { openai: '7.0.0', ai: '7' }
+          - { openai: '7', ai: '7' }
+          - { openai: '7', ai: '5' }
+          - { openai: '7', ai: '6' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @caesura-io/openai add -D openai@${{ matrix.openai }}
+      - run: pnpm --filter @caesura-io/ai-sdk add -D ai@${{ matrix.ai }}
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: Pack and validate a clean consumer installation
+        run: pnpm test:packages '${{ matrix.openai }}' '${{ matrix.ai }}'

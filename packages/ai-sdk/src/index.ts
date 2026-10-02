@@ -1,3 +1,4 @@
+export type { CaesuraMiddlewareWithConversations } from './middleware.js';
 export { caesuraMiddleware } from './middleware.js';
 export { CaesuraClient } from './client.js';
 export { MemoryCaesuraStore } from './store.js';
@@ -10,7 +11,12 @@ export type {
   StoredRecommendation,
   MemoryStoreOptions,
 } from './store.js';
-export type { AnalyzeMessage, AnalyzeRequestBody, AnalyzeResult } from './client.js';
+export type {
+  AnalyzeMessage,
+  AnalyzeRequestBody,
+  AnalyzeResult,
+  CreateConversationOptions,
+} from './client.js';
 export type { CreditMeter, CreditMeterOptions } from './meter.js';
 export type { DebugLoggerOptions } from './logger.js';
 export type {
