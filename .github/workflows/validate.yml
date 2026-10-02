@@ -21,6 +21,9 @@ jobs:
       - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test
+      - uses: ./.github/actions/setup-publishing
+      - name: Verify publishing CLI without uploading
+        run: pnpm test:publish
 
   compatibility:
     runs-on: ubuntu-latest

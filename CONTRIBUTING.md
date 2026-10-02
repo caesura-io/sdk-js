@@ -29,6 +29,12 @@ the newest 4.x; AI SDK runs against 5/6/7 through actual `wrapLanguageModel` cal
 The consumer checks ESM/CommonJS imports and declarations, both OpenAI APIs,
 streaming, and foreground/background operation without credentials or live calls.
 
+Validation and release use the same npm version pinned in
+`.github/actions/setup-publishing/action.yml`. Do not replace it with `npm@latest`:
+pnpm 9 forwards `--no-git-checks` to npm, which npm 12 rejects. After building,
+`pnpm test:publish` exercises that publish handoff for all three packages with
+`--dry-run` and a loopback registry. It never uploads or verifies OIDC credentials.
+
 After `pnpm build`, run `pnpm test:packages 4.87.3 5` (or other matrix versions).
 This downloads public dependencies into a temporary directory with install scripts
 disabled and removes it afterward. Exact resolved versions appear in its output.

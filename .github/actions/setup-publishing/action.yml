@@ -1,0 +1,11 @@
+name: Set up publishing CLI
+description: Use the same tested npm CLI in validation and release
+runs:
+  using: composite
+  steps:
+    # pnpm 9 forwards --no-git-checks to npm. npm 12 rejects that flag.
+    # npm 11 supports trusted publishing; keep this exact version tested below.
+    - shell: bash
+      run: npm install --global npm@11.21.0
+    - shell: bash
+      run: npm --version

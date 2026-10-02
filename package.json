@@ -18,7 +18,8 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm build && changeset publish",
-    "test:packages": "node scripts/check-packages.mjs"
+    "test:packages": "node scripts/check-packages.mjs",
+    "test:publish": "node scripts/check-publish.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.9",
