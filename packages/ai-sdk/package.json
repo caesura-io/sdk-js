@@ -1,6 +1,6 @@
 {
   "name": "@caesura-io/ai-sdk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "CaesuraO adapter for the Vercel AI SDK — asynchronous, non-blocking recommendation injection via language model middleware.",
   "license": "Apache-2.0",
   "author": "CaesuraO",
