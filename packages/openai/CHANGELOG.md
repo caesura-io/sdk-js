@@ -1,5 +1,59 @@
 # @caesura-io/openai
 
+## 0.4.0
+
+### Minor Changes
+
+- 728e6a4: Require one authoritative conversationId for all stateful calls, including persist:false.
+  Remove local-to-backend mappings and default-session fallback; reject the removed
+  autoCreateConversation option. Explicit creation returns the ID and emits a
+  conversation-created event with cancellation/deadline and provenance support.
+
+  Add awaited application-owned transcript persistence independent of analysis cadence,
+  completed agent text capture, terminal provider stream outcomes, and automatic SDK
+  provenance from package metadata. Clarify that
+  HTTP analysis persistence is not a complete transcript archive. See MIGRATION.md and
+  docs/conversations.md for migration, idempotency, stream limitations and wire headers.
+
+- 728e6a4: Add explicit customer-event selection, cancellation, FIFO background completion and
+  shutdown, strict foreground failure handling, required awaited result persistence,
+  and finalized provider request/response auditing.
+
+  Breaking: observation cadence follows customer event identity; assistant and tool
+  continuations no longer independently trigger analysis. Custom stores require
+  explicit set() and may be asynchronous. Replace persisted inFlight polling with
+  engine.flush(), and clear state through engine lifecycle APIs. See MIGRATION.md and
+  docs/application-adapters.md for migration, concurrency, idempotency and audit ordering.
+
+- 728e6a4: Preserve provider-native URL and binary inputs while isolating SDK request transformations
+  and audit snapshots. Avoid URL structuredClone failures, including on Node 24.
+
+  Add the incomplete provider-stream terminal status. Require API-specific finish evidence
+  before reporting completion or persisting completed agent text; retain native finish reasons,
+  late usage, cancellation and iteration errors. Valid protocol completion (including length)
+  does not imply semantic completeness. Lock the existing SDK provenance header contract
+  with exact creation/analysis assertions against package-derived versions.
+
+### Patch Changes
+
+- 728e6a4: Monitor cancellation and explicit deadlines while awaiting required finalized-request
+  persistence. Pass live ProviderAuditContext controls separately from detached audit
+  snapshots, and prevent provider invocation after cancellation or timeout across both
+  OpenAI APIs and AI SDK generate/stream. Preserve strict/continue handling of ordinary
+  storage errors and safely handle late audit callback settlement. Cancellation cannot
+  roll back application-owned writes or interrupt synchronous blocking work.
+- 728e6a4: Append skillPrompt to the last eligible instruction message while preserving its
+  role, structured content and provider metadata. Check all eligible instructions
+  for the exact prompt before insertion; prepend a system message only when absent.
+  Responses continues to use instructions and avoids duplicates in reused requests.
+  Empty or whitespace-only skillPrompt disables insertion. Preserve dialogue anchors
+  and finalized audit capture without changing the default prompt or analysis placement.
+- Updated dependencies [728e6a4]
+- Updated dependencies [728e6a4]
+- Updated dependencies [728e6a4]
+- Updated dependencies [728e6a4]
+  - @caesura-io/core@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
