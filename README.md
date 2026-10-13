@@ -1,18 +1,18 @@
-# CaesuraO JS/TS SDKs
+# CaesuraO JavaScript SDKs
 
-This repository is a monorepo containing the SDKs and framework adapters for CaesuraO in JavaScript/TypeScript.
+Add conversation analysis and guidance to your agent:
 
-- [Core (Framework Agnostic)](./packages/core/)
-- [Vercel AI SDK Adapter](./packages/ai-sdk/)
-- [OpenAI SDK Adapter](./packages/openai/)
+- [OpenAI adapter](packages/openai): Chat Completions and Responses.
+- [AI SDK adapter](packages/ai-sdk): model middleware for AI SDK 5, 6 and 7.
+- [Core](packages/core): shared analysis engine and lifecycle helpers.
 
-The default API endpoint is `https://api.caesurao.com`; environments are linked to the user account.
-`persist` defaults to `true`. Create a backend conversation once with `createConversation()` and reuse its ID,
-or enable `autoCreateConversation: true` to map local session labels automatically. Set `persist: false`
-for analysis without backend storage. See each adapter's README for complete examples.
+Start with an adapter README or the [runnable examples](https://github.com/caesura-io/examples-sdk-js).
 
-Package names, code identifiers, and `CAESURA_API_KEY` are unchanged.
+Every stateful call requires a `conversationId`. Create it explicitly and reuse it; an ID does not load history. Analysis persistence is enabled by default and saves the analyzed customer message plus analysis, not a full transcript.
 
-See [migration notes](./MIGRATION.md) for changed defaults, public types, and shared
-text/budgeting policies. OpenAI support is `>=4.87.3 <8`; AI SDK majors 5/6/7 are
-validated with packed-package consumers before release.
+## Guides
+
+- [Conversations, persistence and diagnostics](docs/conversations.md)
+- [Stores, cancellation and auditing](docs/application-adapters.md)
+- [Migration](MIGRATION.md)
+- [Contributing](CONTRIBUTING.md)

@@ -1,3 +1,10 @@
+import { sdkHeaders, sdkIdentity } from './provenance.js';
+import type {
+  AnalysisContext,
+  AnalysisTransport,
+  CreationContext,
+  SdkIdentity,
+} from './contracts.js';
 import type { CaesuraAnalysis } from './types.js';
 
 /** A message in the backend's existing AnalysisRequest shape. */
@@ -18,6 +25,7 @@ export interface AnalyzeRequestBody {
   /** Guidance recipient, set by the engine to the configured agent speaker name. */
   currentUser?: string;
   messages: AnalyzeMessage[];
+  /** Saves only the last submitted utterance and its analysis, not a transcript archive. */
   persist?: boolean;
   calculateSimilarities?: boolean;
   similarityThreshold?: number;
@@ -33,6 +41,10 @@ export interface AnalyzeResult {
   isSame?: boolean;
   analysis: CaesuraAnalysis;
   creditUsage?: number;
+  /** Transport-specific usage and response metadata, preserved without reshaping. */
+  usage?: unknown;
+  requestId?: string;
+  metadata?: Readonly<Record<string, unknown>>;
 }
 
 export class CaesuraClient {
@@ -40,12 +52,15 @@ export class CaesuraClient {
     private readonly baseUrl: string,
     private readonly apiKey: string,
     private readonly timeoutMs: number,
-  ) {}
+  ) {
+    if (!apiKey)
+      throw new Error('CaesuraO: HTTP transport requires an API key.');
+  }
 
   /** Calls the analyze endpoint. Returns the analysis and optional credit usage. */
   async analyze(
     body: AnalyzeRequestBody,
-    opts?: { includeCreditUsage?: boolean },
+    opts?: { includeCreditUsage?: boolean; sdk?: SdkIdentity },
     externalSignal?: AbortSignal,
   ): Promise<AnalyzeResult> {
     const ctrl = new AbortController();
@@ -62,12 +77,15 @@ export class CaesuraClient {
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${this.apiKey}`,
+          ...sdkHeaders(opts?.sdk ?? sdkIdentity('http')),
           ...(opts?.includeCreditUsage
             ? { 'x-include-credit-usage': 'true' }
             : {}),
         },
         body: JSON.stringify(body),
-        signal: ctrl.signal,
+        signal: externalSignal
+          ? AbortSignal.any([ctrl.signal, externalSignal])
+          : ctrl.signal,
       });
 
       if (!res.ok) {
@@ -98,6 +116,8 @@ export class CaesuraClient {
       const creditUsage = raw != null ? Number(raw) : undefined;
       return {
         analysis,
+        requestId: res.headers.get('x-request-id') ?? undefined,
+        metadata: { status: res.status },
         isSame: typeof flag === 'boolean' ? flag : undefined,
         creditUsage:
           creditUsage != null && Number.isFinite(creditUsage)
@@ -113,6 +133,8 @@ export class CaesuraClient {
   /** Create once and reuse the backend ID. Explicit failures propagate. */
   async createConversation(
     options: CreateConversationOptions = {},
+    externalSignal?: AbortSignal,
+    sdk: SdkIdentity = sdkIdentity('http'),
   ): Promise<string> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
@@ -121,6 +143,7 @@ export class CaesuraClient {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          ...sdkHeaders(sdk),
           authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
@@ -128,7 +151,9 @@ export class CaesuraClient {
           calendarId: options.calendarId,
           eventId: options.eventId,
         }),
-        signal: ctrl.signal,
+        signal: externalSignal
+          ? AbortSignal.any([ctrl.signal, externalSignal])
+          : ctrl.signal,
       });
       if (!res.ok)
         throw new Error(
@@ -154,5 +179,26 @@ export class CaesuraClient {
 
   private trimmedBase(): string {
     return this.baseUrl.replace(/\/+$/, '');
+  }
+}
+
+/** Default application-independent HTTP implementation. */
+export class HttpAnalysisTransport implements AnalysisTransport {
+  constructor(public readonly client: CaesuraClient) {}
+  analyze(
+    body: AnalyzeRequestBody,
+    context: AnalysisContext,
+  ): Promise<AnalyzeResult> {
+    return this.client.analyze(
+      body,
+      { includeCreditUsage: context.includeCreditUsage, sdk: context.sdk },
+      context.signal,
+    );
+  }
+  createConversation(
+    options: CreateConversationOptions,
+    context: CreationContext,
+  ): Promise<string> {
+    return this.client.createConversation(options, context.signal, context.sdk);
   }
 }

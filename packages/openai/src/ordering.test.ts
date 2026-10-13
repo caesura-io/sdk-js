@@ -112,12 +112,18 @@ describe.each(['sync', 'async'] as const)(
           const accepted = queried && (!scenario.dedup || turn === 1);
           const prior = [...buffered];
           if (useResponses)
-            await client.responses.create({ model: 'test', input });
+            await client.responses.create(
+              { model: 'test', input },
+              { caesura: { turn: { id: String(turn), origin: 'customer' } } },
+            );
           else
-            await client.chat.completions.create({
-              model: 'test',
-              messages: input,
-            });
+            await client.chat.completions.create(
+              {
+                model: 'test',
+                messages: input,
+              },
+              { caesura: { turn: { id: String(turn), origin: 'customer' } } },
+            );
           expect(input).toEqual(before);
           const body = (useResponses ? responses : chat).mock.calls.at(-1)![0];
           const forwarded = (
@@ -144,7 +150,10 @@ describe.each(['sync', 'async'] as const)(
             else input.at(-1).content = 'MUTATED';
             input.at(-1).name = 'Wrong participant';
             input.push({ role: 'user', content: 'NEW TURN' });
+            await vi.waitFor(() => expect(release).toBeTypeOf('function'));
             release!();
+            release = undefined;
+            await client.caesura.flush();
             await vi.waitFor(() =>
               expect(store.get('one').inFlight).toBe(false),
             );
@@ -213,6 +222,7 @@ it.each(['chat', 'responses'] as const)(
     const { collectOpenAIMessages, injectBlocksOpenAI } =
       await import('./adapters.js');
     const cfg = resolveConfig({
+      conversationId: 'fixture-conversation',
       apiKey: 'test',
       inject: { placement: 'after-last-analyzed', skillPrompt: '' },
     });

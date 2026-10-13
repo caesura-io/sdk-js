@@ -5,6 +5,7 @@ export { createDebugLogger } from './logger.js';
 export { createCaesuraEngine, resolveConfig } from './engine.js';
 export { DEFAULT_TEMPLATE, DEFAULT_SKILL_PROMPT } from './defaults.js';
 export {
+  normalizeDialogue,
   hashMessage,
   dialogueAnchors,
   limitMessages,
@@ -51,3 +52,8 @@ export {
   rememberInjectedMessage,
   isInjectedMessage,
 } from './injections.js';
+
+export * from './contracts.js';
+export { HttpAnalysisTransport } from './client.js';
+
+export { copyProviderValue } from './copy.js';

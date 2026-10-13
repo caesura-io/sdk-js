@@ -19,16 +19,22 @@ const format = (role: string, text: string) => ({
   role,
   content: role === 'system' ? text : [{ type: 'text', text }],
 });
-function setup(api: string, options: any): (input: any) => Promise<any[]> {
+function setup(api: string, options: any) {
   const middleware = caesuraMiddleware(options);
-  return async (prompt) =>
+  const run = async (prompt: any) =>
     (
       await middleware.transformParams!({
         type: api as 'generate' | 'stream',
-        params: { prompt },
+        params: {
+          prompt,
+          providerOptions: {
+            caesura: { turn: { id: crypto.randomUUID(), origin: 'customer' } },
+          },
+        },
         model: {},
       })
     ).prompt;
+  return Object.assign(run, { flush: () => middleware.caesura.flush() });
 }
 
 describe.each(['sync', 'async'] as const)(
@@ -36,7 +42,7 @@ describe.each(['sync', 'async'] as const)(
   (mode) => {
     describe.each(['generate', 'stream'] as const)('%s', (api) => {
       it.each(['user', 'assistant', 'system', 'developer'] as const)(
-        'cleans and reinjects %s guidance once in the default session',
+        'cleans and reinjects %s guidance once in the explicit conversation',
         async (as) => {
           const store = new MemoryCaesuraStore();
           const requests: AnalyzeRequestBody[] = [];
@@ -61,10 +67,11 @@ describe.each(['sync', 'async'] as const)(
             }),
           );
           const run = setup(api, {
+            conversationId: 'fixture-conversation',
             apiKey: 'test',
             mode,
             store,
-            autoCreateConversation: true,
+
             speakerNames: { agent: 'Support', customer: 'Visitor' },
             inject: { as, skillPrompt: '', template: '{analysis}' },
             onEvent: (e: CaesuraEvent) => events.push(e),
@@ -80,8 +87,9 @@ describe.each(['sync', 'async'] as const)(
             if (mode === 'async') {
               await vi.waitFor(() => expect(requests).toHaveLength(turn));
               release();
+              await run.flush();
               await vi.waitFor(() =>
-                expect(store.get('default').inFlight).toBe(false),
+                expect(store.get('fixture-conversation').inFlight).toBe(false),
               );
             }
             expect(history).toEqual(original);
@@ -109,8 +117,8 @@ describe.each(['sync', 'async'] as const)(
               }
             }
             expect(requests.at(-1)).toMatchObject({
-              conversationId: 'backend',
-              sessionId: 'backend',
+              conversationId: 'fixture-conversation',
+              sessionId: 'fixture-conversation',
               persist: true,
               currentUser: 'Support',
             });
@@ -135,7 +143,7 @@ describe.each(['sync', 'async'] as const)(
             );
             history = JSON.parse(JSON.stringify(forwarded));
           }
-          expect(creations).toBe(1);
+          expect(creations).toBe(0);
         },
       );
     });
@@ -158,6 +166,7 @@ it.each(['opposite role', 'named', 'explicit index', 'multimodal'])(
       }),
     );
     const run = setup('generate', {
+      conversationId: 'fixture-conversation',
       apiKey: 'test',
       mode: 'sync',
       inject: { skillPrompt: '', template: '{analysis}' },
@@ -217,7 +226,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
       'fetch',
       vi.fn(async () => Response.json({ isSame: true })),
     );
-    store.add('default', [
+    store.add('fixture-conversation', [
       {
         id: 'r',
         analysis: 'guidance',
@@ -227,6 +236,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
       },
     ]);
     const run = setup('generate', {
+      conversationId: 'fixture-conversation',
       apiKey: 'test',
       mode: 'sync',
       store,
@@ -235,6 +245,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
     const first = await run([format('user', 'hello')]);
     now = 5000;
     const next = setup('generate', {
+      conversationId: 'fixture-conversation',
       apiKey: 'test',
       mode: 'sync',
       store,
@@ -253,7 +264,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
       format('user', 'next'),
     ]);
     expect(history).toEqual(original);
-    expect(store.get('default').recommendations).toHaveLength(1);
+    expect(store.get('fixture-conversation').recommendations).toHaveLength(1);
   },
 );
 
@@ -272,6 +283,7 @@ it('recognizes older individual and merged renderings after retention changes', 
     }),
   );
   const cfg = {
+    conversationId: 'fixture-conversation',
     apiKey: 'test',
     mode: 'sync',
     store,
@@ -316,6 +328,7 @@ it.each(['generate', 'stream'])(
       }),
     );
     const run = setup(api, {
+      conversationId: 'fixture-conversation',
       apiKey: 'test',
       mode: 'sync',
       cadence: { everyTurns: 2 },

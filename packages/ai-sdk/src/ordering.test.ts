@@ -12,7 +12,7 @@ describe.each(['sync', 'async'] as const)(
       async (type) => {
         const requests: AnalyzeRequestBody[] = [];
         const store = new MemoryCaesuraStore();
-        let release!: () => void;
+        let release: (() => void) | undefined;
         vi.stubGlobal(
           'fetch',
           vi.fn(async (_url, init) => {
@@ -46,7 +46,12 @@ describe.each(['sync', 'async'] as const)(
           const original = structuredClone(prompt);
           const result = await middleware.transformParams!({
             type,
-            params: { prompt },
+            params: {
+              prompt,
+              providerOptions: {
+                caesura: { turn: { id: String(turn), origin: 'customer' } },
+              },
+            },
             model: {},
           });
           expect(result.prompt).toEqual(
@@ -65,7 +70,10 @@ describe.each(['sync', 'async'] as const)(
           expect(prompt).toEqual(original);
           if (mode === 'async') {
             prompt[0]!.content = 'MUTATED';
-            release();
+            await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+            release!();
+            release = undefined;
+            await middleware.caesura.flush();
             await vi.waitFor(() =>
               expect(store.get('one').inFlight).toBe(false),
             );

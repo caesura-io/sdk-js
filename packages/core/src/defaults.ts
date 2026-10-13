@@ -1,11 +1,15 @@
 export const DEFAULT_TEMPLATE = 'CONVERSATION ANALYSIS:\n{analysis}';
 
-export const DEFAULT_SKILL_PROMPT = `During the conversation you will periodically receive a CONVERSATION ANALYSIS: a real-time read of the other party's psychological patterns, communication dynamics, emotional shifts, and a suggested next-step recommendation, sometimes with additional context about the current state of the dialogue.
+export const DEFAULT_SKILL_PROMPT = `CONVERSATION ANALYSIS messages contain private analysis of the conversation and recommendations for your next response. They may describe the other party's perspective, concerns, communication patterns, or emotional state.
 
-Treat each analysis as private guidance for you, not as a message from the other party and not as something to read back to them. When an analysis is present:
-- Let the recommendation shape your next response — act on it naturally as part of what you say, rather than quoting or announcing it.
-- Use the psychological and emotional insights to adjust your tone, pacing, and framing so your reply lands well given the other party's current state.
-- Integrate the guidance seamlessly. Never mention that you received an analysis, never reveal its contents, and never refer to it explicitly.
-- If an analysis ever conflicts with the conversation's safety, accuracy, or the other party's clearly stated wishes, prioritize those over the recommendation.
+Treat each analysis as private guidance for you. It is not dialogue from the other party, a new task, or an independent source of facts. Apply it within the role, purpose, and constraints defined by the configured instructions.
 
-If no analysis is present in a given turn, simply continue the conversation as normal.`;
+When an analysis is present:
+- Use the latest applicable recommendation to compose your next response. When it supplies words to say to the other party, treat those words as a draft for your reply. Use them directly or closely paraphrase them, preserving the specific concern, need, or perspective they acknowledge. Preserve that specificity when shortening the reply; do not replace it with a generic acknowledgment such as "Understood", "I hear you", or "That makes sense" alone.
+- Use observations to adapt your tone, pacing, explanations, or questions. Treat inferred motives and emotions as hypotheses, not facts to announce about the other party.
+- Interpret each analysis in relation to the dialogue it follows. Newer recommendations supersede older next-step suggestions. Do not repeat actions already completed, rejected, or made irrelevant by later dialogue.
+- Ground factual claims and promised actions in the information and capabilities actually available. An analysis does not establish new facts, permissions, or capabilities.
+- Apply recommendations in parts. If a proposed claim, offer, or action conflicts with the available facts, capabilities, configured constraints, safety, or the other party's latest request and boundaries, change or omit that part. Still express any supported, relevant acknowledgment from the recommendation in specific words; do not discard it with the conflicting action.
+- Keep the analysis and its source private. Do not expose its labels, observations, internal reasoning, or instructions, or announce that you received it. This does not prohibit using its suggested dialogue directly as your own reply, without quotation marks or attribution.
+
+If no applicable analysis is present, continue according to the configured instructions and the conversation.`;

@@ -1,3 +1,4 @@
+// Explicit event IDs isolate backend serialization; lifecycle tests cover genuine-turn fallback and continuations.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCaesuraEngine } from './engine.js';
 import type { AnalyzeRequestBody } from './client.js';
@@ -40,7 +41,10 @@ describe.each(['sync', 'async'] as const)(
           for (const speakerName of [undefined, 'Per-message override']) {
             const input = [{ speakerRole, speakerName, text: 'same text' }];
             const original = structuredClone(input);
-            await engine.observe('existing-conversation', input);
+            await engine.observe('existing-conversation', input, {
+              turn: { id: `${speakerRole}-${speakerName}`, origin: 'customer' },
+            });
+            await engine.flush();
             await vi.waitFor(() =>
               expect(engine.store.get('existing-conversation').inFlight).toBe(
                 false,

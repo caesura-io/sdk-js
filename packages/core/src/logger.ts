@@ -22,7 +22,9 @@ export interface DebugLoggerOptions {
   truncateText?: number;
 }
 
-export function createDebugLogger(options: DebugLoggerOptions = {}): (event: CaesuraEvent) => void {
+export function createDebugLogger(
+  options: DebugLoggerOptions = {},
+): (event: CaesuraEvent) => void {
   const types = options.types ? new Set(options.types) : null;
   const truncateText = options.truncateText;
 
@@ -86,11 +88,17 @@ export function createDebugLogger(options: DebugLoggerOptions = {}): (event: Cae
     const prefix = `[caesura:${event.type}] [${timestamp}]`;
 
     switch (event.type) {
+      case 'conversation-created': {
+        logFn(`${prefix} Conversation: ${event.conversationId}`, {
+          sdk: event.sdk,
+        });
+        break;
+      }
       case 'request': {
         const body = processPayload(event.body);
         logFn(
           `${prefix} Conversation: ${event.conversationId}, Turn: ${event.queryTurn}`,
-          { body, includeCreditUsage: event.includeCreditUsage }
+          { body, includeCreditUsage: event.includeCreditUsage },
         );
         break;
       }
@@ -98,42 +106,44 @@ export function createDebugLogger(options: DebugLoggerOptions = {}): (event: Cae
         const analysis = processPayload(event.analysis);
         logFn(
           `${prefix} Conversation: ${event.conversationId}, Turn: ${event.queryTurn}, Duration: ${event.durationMs}ms`,
-          { analysis, creditUsage: event.creditUsage }
+          { analysis, creditUsage: event.creditUsage },
         );
         break;
       }
       case 'skipped': {
         logFn(
-          `${prefix} Conversation: ${event.conversationId}, Turn: ${event.turn}, Reason: ${event.reason}`
+          `${prefix} Conversation: ${event.conversationId}, Turn: ${event.turn}, Reason: ${event.reason}`,
         );
         break;
       }
       case 'buffered': {
         logFn(
-          `${prefix} Conversation: ${event.conversationId}, Turn: ${event.queryTurn}, RecID: ${event.recommendationId}`
+          `${prefix} Conversation: ${event.conversationId}, Turn: ${event.queryTurn}, RecID: ${event.recommendationId}`,
         );
         break;
       }
       case 'deduped': {
         logFn(
-          `${prefix} Conversation: ${event.conversationId}, Turn: ${event.queryTurn} (Duplicate or empty recommendation)`
+          `${prefix} Conversation: ${event.conversationId}, Turn: ${event.queryTurn} (Duplicate or empty recommendation)`,
         );
         break;
       }
       case 'injected': {
         const blocks = processPayload(event.blocks);
         // Extract indices for a quick summary
-        const indices = Array.from(new Set(event.blocks.map(b => b.index))).join(', ');
+        const indices = Array.from(
+          new Set(event.blocks.map((b) => b.index)),
+        ).join(', ');
         logFn(
           `${prefix} Conversation: ${event.conversationId}, Turn: ${event.turn}, Indices: [${indices}], Count: ${event.blocks.length}, Placement: ${event.placement}`,
-          { blocks }
+          { blocks },
         );
         break;
       }
       case 'error': {
         logFn(
           `${prefix} Conversation: ${event.conversationId} Error occurred`,
-          { error: event.error }
+          { error: event.error },
         );
         break;
       }

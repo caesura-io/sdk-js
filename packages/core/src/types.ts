@@ -1,5 +1,14 @@
 import type { CaesuraStore } from './store.js';
 import type { AnalyzeRequestBody } from './client.js';
+import type {
+  AnalysisTransport,
+  FailurePolicy,
+  AnalysisCompletion,
+  ProviderAuditEvent,
+  Awaitable,
+  TranscriptBatch,
+  ProviderAuditContext,
+} from './contracts.js';
 
 /** Whether recommendation generation blocks the model call. */
 export type CaesuraMode = 'async' | 'sync';
@@ -96,6 +105,21 @@ export interface CreditUsageInfo {
 
 /** Top-level SDK configuration. Almost everything is optional. */
 export interface CaesuraConfig {
+  transport?: AnalysisTransport;
+  /** Application-owned transcript upsert, awaited independently of analysis cadence. */
+  persistMessages?: (batch: TranscriptBatch) => Awaitable<void>;
+  /** Foreground analysis/store failures: default continue. Cancellation always rejects. */
+  failurePolicy?: FailurePolicy;
+  /** Required application persistence, awaited before guidance is committed. */
+  persistAnalysis?: (completion: AnalysisCompletion) => Awaitable<void>;
+  /** Observational; failures are reported safely through onError. */
+  onCompletion?: (completion: AnalysisCompletion) => Awaitable<void>;
+  onProviderEvent?: (event: ProviderAuditEvent) => Awaitable<void>;
+  /** Required finalized-request persistence. Live cancellation/deadline controls are passed separately. */
+  persistProviderRequest?: (
+    event: Extract<ProviderAuditEvent, { type: 'request' }>,
+    context: ProviderAuditContext,
+  ) => Awaitable<void>;
   /** API key. Falls back to process.env.CAESURA_API_KEY if omitted. */
   apiKey?: string;
 
@@ -115,13 +139,13 @@ export interface CaesuraConfig {
   conversationId?: string;
 
   /**
-   * Whether the backend should persist this conversation/analysis.
-   * Default: true. Requires an existing backend conversation ID or automatic creation.
+   * Whether /api/analyze saves its final submitted utterance and analysis.
+   * This does not archive the complete transcript or load history. Default: true.
    */
   persist?: boolean;
 
-  /** Map local session labels to backend conversations automatically. Default: false. */
-  autoCreateConversation?: boolean;
+  /** @deprecated Removed. Explicitly create a conversation and reuse its ID. Any supplied value is rejected. */
+  autoCreateConversation?: never;
 
   /** Calculate server-side cosine similarities. Default: true; does not set a suppression threshold. */
   calculateSimilarities?: boolean;
@@ -140,7 +164,7 @@ export interface CaesuraConfig {
 
   /**
    * Store implementation. Defaults to an in-memory store with eviction.
-   * Provide your own (e.g. Redis-backed) for multi-process/serverless.
+   * Custom stores require explicit set(); distributed deployments additionally need application-owned conversation locking.
    */
   store?: CaesuraStore;
 
@@ -150,7 +174,7 @@ export interface CaesuraConfig {
   /**
    * If provided, the SDK requests credit-usage metadata on every analyze
    * call and invokes this with the reported value. Presence of this callback
-   * is what opts you in; omit it and no credit header is requested.
+   * opts you in. Required result persistence and completion observers also request credit metadata.
    */
   onCreditUsage?: (info: CreditUsageInfo) => void;
 
@@ -159,6 +183,11 @@ export interface CaesuraConfig {
 }
 
 export type CaesuraEvent =
+  | {
+      type: 'conversation-created';
+      conversationId: string;
+      sdk: import('./contracts.js').SdkIdentity;
+    }
   | {
       type: 'request';
       conversationId: string;
@@ -219,13 +248,12 @@ export type CaesuraEvent =
 
 /** Internal: fully-resolved config with defaults applied. */
 export interface ResolvedConfig {
-  apiKey: string;
+  apiKey?: string;
   baseUrl: string;
   callType?: string;
   mode: CaesuraMode;
   conversationId?: string;
   persist: boolean;
-  autoCreateConversation: boolean;
   calculateSimilarities: boolean;
   similarityThreshold?: number;
   speakerNames: Required<SpeakerNames>;

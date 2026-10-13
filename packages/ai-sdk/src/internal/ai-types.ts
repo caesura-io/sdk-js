@@ -5,6 +5,18 @@
 // we define a structural type that satisfies `wrapLanguageModel`.
 export interface CaesuraMiddleware {
   specificationVersion: any;
+  wrapGenerate?: (args: {
+    params: any;
+    model: any;
+    doGenerate: () => PromiseLike<any>;
+    doStream: () => PromiseLike<any>;
+  }) => Promise<any>;
+  wrapStream?: (args: {
+    params: any;
+    model: any;
+    doStream: () => PromiseLike<any>;
+    doGenerate: () => PromiseLike<any>;
+  }) => Promise<any>;
   transformParams?: (args: {
     type: 'generate' | 'stream';
     params: any;

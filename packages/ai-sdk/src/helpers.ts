@@ -35,9 +35,11 @@ export function messageText(content: PromptMessageLike['content']): string {
 export function stripInjectedMessages(
   prompt: PromptMessageLike[],
   known: ReadonlySet<string>,
+  protectedMessages: ReadonlySet<unknown> = new Set(),
 ): PromptMessageLike[] {
   return prompt.filter(
     (message) =>
+      protectedMessages.has(message) ||
       !isInjectedMessage(message, messageText(message.content), known),
   );
 }
@@ -112,6 +114,10 @@ export function injectBlocks(
   inject: Required<Omit<InjectConfig, 'skillPrompt'>>,
   speakerNames: Required<SpeakerNames>,
   injectedMessages: ReadonlySet<string> = new Set(),
+  selection?: {
+    positions: readonly number[];
+    messages: readonly AnalyzeMessage[];
+  },
 ): InjectBlockResult {
   prompt = stripInjectedMessages(prompt, injectedMessages);
   if (blocks.length === 0) return { prompt, indices: [] };
@@ -133,12 +139,17 @@ export function injectBlocks(
   const dialoguePositions: number[] = [];
   const hashToPositions = new Map<string, number[]>();
   for (let i = 0; i < prompt.length; i++) {
-    const [message] = collectMessages(
+    const selected = selection?.positions.indexOf(i);
+    if (selected === -1) continue;
+    const [collectedMessage] = collectMessages(
       [prompt[i]!],
       { maxMessages: 'all' },
       speakerNames,
       new Set(), // Guidance was already stripped; string input is fresh dialogue.
     );
+    const message = selection
+      ? selection.messages[selected!]
+      : collectedMessage;
     if (!message) continue;
     dialogue.push(message);
     dialoguePositions.push(i);
@@ -259,8 +270,8 @@ export function injectBlocks(
 }
 
 /**
- * Appends the skillPrompt to the system prompt (if present) or prepends a new
- * system message (if absent). Skips if skillPrompt is empty or already present.
+ * Append to the last system message, unless any system message contains the prompt.
+ * Prepend a system message when absent. AI SDK has no developer message role.
  */
 export function applySkillPrompt(
   prompt: PromptMessageLike[],
@@ -270,18 +281,21 @@ export function applySkillPrompt(
     return prompt;
   }
 
-  const sysIndex = prompt.findIndex((m) => m.role === 'system');
+  let sysIndex = -1;
+  for (let i = 0; i < prompt.length; i++) {
+    const message = prompt[i]!;
+    if (message.role !== 'system') continue;
+    if (messageText(message.content).includes(skillPrompt)) return prompt;
+    sysIndex = i;
+  }
 
   if (sysIndex !== -1) {
     const sysMsg = prompt[sysIndex]!;
     const currentContent = sysMsg.content;
-
-    const currentText = messageText(currentContent);
-    if (currentText.includes(skillPrompt)) {
-      return prompt;
-    }
-
-    const newContent = `${currentText}\n\n${skillPrompt}`;
+    const newContent =
+      typeof currentContent === 'string'
+        ? `${currentContent}\n\n${skillPrompt}`
+        : [...currentContent, { type: 'text', text: `\n\n${skillPrompt}` }];
 
     const newSysMsg: PromptMessageLike = {
       ...sysMsg,

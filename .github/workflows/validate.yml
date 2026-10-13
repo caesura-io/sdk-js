@@ -21,6 +21,7 @@ jobs:
       - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test
+      - run: node --test scripts/fixtures/internal-transport.test.mjs
       - uses: ./.github/actions/setup-publishing
       - name: Verify publishing CLI without uploading
         run: pnpm test:publish

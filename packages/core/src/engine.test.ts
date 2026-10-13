@@ -5,6 +5,11 @@ import { hashMessage, renderBlock, selectActive } from './helpers.js';
 import type { AnalyzeMessage } from './client.js';
 import type { CaesuraAnalysis, CaesuraEvent } from './types.js';
 
+let sequence = 0;
+const customerTurn = () => ({
+  turn: { id: `customer-${++sequence}`, origin: 'customer' as const },
+});
+
 const dialogue: AnalyzeMessage[] = [
   { speakerRole: 'user', text: 'oldest dialogue' },
   { speakerRole: 'assistant', text: 'newest dialogue' },
@@ -21,7 +26,6 @@ describe('engine regressions', () => {
     expect(cfg).toMatchObject({
       baseUrl: 'https://api.caesurao.com',
       persist: true,
-      autoCreateConversation: false,
     });
     expect(cfg.callType).toBeUndefined();
   });
@@ -58,10 +62,8 @@ describe('engine regressions', () => {
           createdAtTurn: 0,
         },
       ]);
-      await engine.observe('id', dialogue);
-      await vi.waitFor(() =>
-        expect(engine.store.get('id').inFlight).toBe(false),
-      );
+      await engine.observe('id', dialogue, customerTurn());
+      await engine.flush();
       const body = JSON.parse(fetcher.mock.calls[0]![1].body);
       expect(body.messages).toEqual([
         {
@@ -106,10 +108,11 @@ describe('engine regressions', () => {
       },
     ];
     await engine.observe('id', input);
-    await engine.observe('id', [
-      ...input,
-      { speakerRole: 'assistant', text: 'answer' },
-    ]);
+    await engine.observe(
+      'id',
+      [...input, { speakerRole: 'assistant', text: 'answer' }],
+      customerTurn(),
+    );
     expect(JSON.parse(fetcher.mock.calls[1]![1].body).messages).toEqual([
       input[0],
       { speakerRole: 'assistant', speakerIndex: -1, text: '0' },
@@ -130,10 +133,9 @@ describe('engine regressions', () => {
       const engine = createCaesuraEngine({
         apiKey: 'key',
         mode: 'sync',
-        autoCreateConversation: true,
         send,
       });
-      await engine.observe('local', dialogue);
+      await engine.observe('local', dialogue, customerTurn());
       expect(fetcher).not.toHaveBeenCalled();
       expect(engine.store.get('local').turn).toBe(1);
     },
@@ -150,18 +152,18 @@ describe('engine regressions', () => {
       cadence: { everyTurns: 2 },
       inject: { ttl: { type: 'turns', turns: 0 } },
     });
-    await engine.observe('id', dialogue);
+    await engine.observe('id', dialogue, customerTurn());
     expect(
       selectActive(engine.store.get('id'), engine.config.inject, Date.now()),
     ).toHaveLength(1);
-    await engine.observe('id', dialogue);
+    await engine.observe('id', dialogue, customerTurn());
     expect(
       selectActive(engine.store.get('id'), engine.config.inject, Date.now()),
     ).toHaveLength(0);
-    await engine.observe('id', dialogue);
+    await engine.observe('id', dialogue, customerTurn());
     await engine.observe('id', []);
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(engine.store.get('id').turn).toBe(4);
+    expect(engine.store.get('id').turn).toBe(3);
   });
 
   it.each<CaesuraAnalysis>([
@@ -182,7 +184,7 @@ describe('engine regressions', () => {
       mode: 'sync',
       onEvent: (e) => events.push(e),
     });
-    await engine.observe('id', dialogue);
+    await engine.observe('id', dialogue, customerTurn());
     const recs = engine.store.get('id').recommendations;
     expect(recs[0]?.analysis).toEqual(analysis);
     expect(renderBlock(recs, engine.config.inject)).toHaveLength(1);
@@ -199,7 +201,7 @@ describe('engine regressions', () => {
         vi.fn().mockImplementation(() => Promise.resolve(json(analysis))),
       );
       const engine = createCaesuraEngine({ apiKey: 'key', mode: 'sync' });
-      await engine.observe('id', dialogue);
+      await engine.observe('id', dialogue, customerTurn());
       expect(engine.store.get('id').recommendations).toHaveLength(0);
     },
   );
@@ -219,14 +221,16 @@ describe('engine regressions', () => {
       onEvent: fail,
       onCreditUsage: fail,
     });
-    await expect(engine.observe('id', dialogue)).resolves.toBeUndefined();
+    await expect(
+      engine.observe('id', dialogue, customerTurn()),
+    ).resolves.toBeUndefined();
     expect(engine.store.get('id').recommendations).toHaveLength(1);
     expect(engine.store.get('id').inFlight).toBe(false);
   });
 });
 
 describe('conversation lifecycle', () => {
-  it('creates explicitly and reuses that ID even when automatic creation is enabled', async () => {
+  it('creates explicitly and reuses that exact ID', async () => {
     const fetcher = vi
       .fn()
       .mockResolvedValueOnce(json({ id: 'backend' }))
@@ -235,14 +239,13 @@ describe('conversation lifecycle', () => {
     const engine = createCaesuraEngine({
       apiKey: 'key',
       mode: 'sync',
-      autoCreateConversation: true,
     });
     const id = await engine.createConversation({
       name: 'Support',
       calendarId: 'calendar',
       eventId: 'event',
     });
-    await engine.observe(id, dialogue);
+    await engine.observe(id, dialogue, customerTurn());
     expect(fetcher.mock.calls.map((c) => c[0])).toEqual([
       'https://api.caesurao.com/api/conversation',
       'https://api.caesurao.com/api/analyze',
@@ -258,7 +261,7 @@ describe('conversation lifecycle', () => {
   });
 
   it.each(['sync', 'async'] as const)(
-    'reserves overlapping %s observations and retains mapping after analysis failure',
+    'reserves overlapping %s observations without creating a conversation',
     async (mode) => {
       let finish!: (r: Response) => void;
       const fetcher = vi
@@ -269,7 +272,6 @@ describe('conversation lifecycle', () => {
               finish = resolve;
             }),
         )
-        .mockRejectedValueOnce(new Error('analysis failed'))
         .mockResolvedValueOnce(json('advice'));
       vi.stubGlobal('fetch', fetcher);
       const onError = vi.fn();
@@ -280,68 +282,57 @@ describe('conversation lifecycle', () => {
       const engine = createCaesuraEngine({
         apiKey: 'key',
         mode,
-        autoCreateConversation: true,
         onError,
         store,
       });
-      const pending = engine.observe('local', dialogue);
+      const pending = engine.observe('local', dialogue, customerTurn());
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
       const original = store.get('local');
       original.lastAccessMs = 0;
       store.get('other');
-      await engine.observe('local', dialogue);
-      expect(store.get('local')).toBe(original);
+      const duplicate = engine.observe('local', dialogue, {
+        turn: { id: `customer-${sequence}`, origin: 'customer' },
+      });
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+      expect(store.get('local').turn).toBe(1);
       expect(fetcher).toHaveBeenCalledTimes(1);
-      finish(json({ id: 'backend' }));
+      finish(json('advice'));
       await pending;
-      await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
-      await engine.observe('local', dialogue);
-      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+      await duplicate;
+      expect(onError).not.toHaveBeenCalled();
+      await engine.observe('local', dialogue, customerTurn());
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
       expect(
         fetcher.mock.calls.filter((c) => c[0].endsWith('/conversation')),
-      ).toHaveLength(1);
-      expect(JSON.parse(fetcher.mock.calls[2]![1].body).conversationId).toBe(
-        'backend',
+      ).toHaveLength(0);
+      expect(JSON.parse(fetcher.mock.calls[1]![1].body).conversationId).toBe(
+        'local',
       );
     },
   );
 
-  it('reports automatic creation failures and allows a later retry', async () => {
-    const fetcher = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('creation failed'))
-      .mockResolvedValueOnce(json({ id: 'backend' }))
-      .mockResolvedValueOnce(json('ok'));
-    vi.stubGlobal('fetch', fetcher);
-    const onError = vi.fn();
-    const engine = createCaesuraEngine({
-      apiKey: 'key',
-      mode: 'sync',
-      autoCreateConversation: true,
-      onError,
-    });
-    await engine.observe('local', dialogue);
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect(engine.store.get('local').inFlight).toBe(false);
-    await engine.observe('local', dialogue);
-    expect(fetcher).toHaveBeenCalledTimes(3);
+  it('rejects the removed automatic creation option, including false', () => {
+    for (const autoCreateConversation of [true, false])
+      expect(() =>
+        createCaesuraEngine({ apiKey: 'key', autoCreateConversation } as never),
+      ).toThrow('autoCreateConversation was removed');
   });
 
-  it('skips automatic creation for empty dialogue or disabled persistence', async () => {
+  it('never creates implicitly, including disabled persistence', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json('advice'));
     vi.stubGlobal('fetch', fetcher);
     const engine = createCaesuraEngine({
       apiKey: 'key',
       mode: 'sync',
       persist: false,
-      autoCreateConversation: true,
     });
     await engine.observe('local', []);
-    await engine.observe('local', dialogue);
+    await engine.observe('local', dialogue, customerTurn());
     expect(fetcher).toHaveBeenCalledTimes(1);
     const body = JSON.parse(fetcher.mock.calls[0]![1].body);
     expect(body.persist).toBe(false);
-    expect(body).not.toHaveProperty('conversationId');
-    expect(body).not.toHaveProperty('sessionId');
+    expect(body.conversationId).toBe('local');
+    expect(body.sessionId).toBe('local');
   });
 
   it('keeps the originating turn for a delayed analysis', async () => {
@@ -356,10 +347,13 @@ describe('conversation lifecycle', () => {
       ),
     );
     const engine = createCaesuraEngine({ apiKey: 'key' });
-    await engine.observe('id', dialogue);
-    await engine.observe('id', dialogue);
+    await engine.observe('id', dialogue, customerTurn());
+    await engine.observe('id', dialogue, {
+      turn: { id: `customer-${sequence}`, origin: 'customer' },
+    });
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
     finish(json('late'));
-    await vi.waitFor(() => expect(engine.store.get('id').inFlight).toBe(false));
+    await engine.flush();
     expect(engine.store.get('id').recommendations[0]?.createdAtTurn).toBe(1);
   });
 });
@@ -379,7 +373,7 @@ it('contains rejected asynchronous observability callbacks', async () => {
     onCreditUsage: fail,
     onError: fail,
   });
-  await engine.observe('id', dialogue);
+  await engine.observe('id', dialogue, customerTurn());
   expect(engine.store.get('id').recommendations[0]?.analysis).toBe(false);
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(engine.store.get('id').inFlight).toBe(false);
@@ -408,10 +402,8 @@ describe.each(['sync', 'async'] as const)(
       });
       const input: AnalyzeMessage[] = [{ speakerRole: 'assistant', text }];
       for (let turn = 0; turn < 2; turn++) {
-        await engine.observe('existing-backend-id', input);
-        await vi.waitFor(() =>
-          expect(engine.store.get('existing-backend-id').inFlight).toBe(false),
-        );
+        await engine.observe('existing-backend-id', input, customerTurn());
+        await engine.flush();
       }
       const utterance = {
         speakerRole: 'user',
@@ -457,8 +449,8 @@ it.each([
       mode: 'sync',
       ...options,
     });
-    await engine.observe('id', dialogue);
-    await engine.observe('id', dialogue);
+    await engine.observe('id', dialogue, customerTurn());
+    await engine.observe('id', dialogue, customerTurn());
     for (const request of requests) {
       expect(request.calculateSimilarities).toBe(options.calculateSimilarities);
       if ('similarityThreshold' in options)

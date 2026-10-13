@@ -13,7 +13,8 @@ for (const name of ['core', 'openai', 'ai-sdk']) {
   assert.ok(Object.keys(require(`@caesura-io/${name}`)).length > 0);
   assert.ok(Object.keys(await import(`@caesura-io/${name}`)).length > 0);
 }
-const settle = async (store) => {
+const settle = async (store, engine) => {
+  await engine.flush();
   for (let i = 0; i < 100 && store.get('one').inFlight; i++) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -127,12 +128,18 @@ for (const mode of ['sync', 'async']) {
         const responses =
           api === 'responses' || (api === 'switch' && turn % 2 === 1);
         const call = responses
-          ? client.responses.create({ model: 'test', input: history, stream })
-          : client.chat.completions.create({
-              model: 'test',
-              messages: history,
-              stream,
-            });
+          ? client.responses.create(
+              { model: 'test', input: history, stream },
+              { caesura: { turn: { id: String(turn), origin: 'customer' } } },
+            )
+          : client.chat.completions.create(
+              {
+                model: 'test',
+                messages: history,
+                stream,
+              },
+              { caesura: { turn: { id: String(turn), origin: 'customer' } } },
+            );
         const { data } = await call.withResponse();
         if (stream) {
           let chunks = 0;
@@ -142,7 +149,7 @@ for (const mode of ['sync', 'async']) {
           }
           assert.equal(chunks, 1);
         }
-        await settle(store);
+        await settle(store, client.caesura);
         checkBackend(turn);
         assert.deepEqual(history, snapshot);
         assert.deepEqual(
@@ -167,8 +174,9 @@ for (const mode of ['sync', 'async']) {
     backend.length = 0;
     const store = new MemoryCaesuraStore();
     const sent = [];
+    const middleware = caesuraMiddleware(config(store, mode));
     const model = wrapLanguageModel({
-      middleware: caesuraMiddleware(config(store, mode)),
+      middleware,
       model: {
         specificationVersion:
           aiMajor === 5 ? 'v2' : aiMajor === 6 ? 'v3' : 'v4',
@@ -207,13 +215,28 @@ for (const mode of ['sync', 'async']) {
       });
       const snapshot = structuredClone(prompt);
       if (stream) {
-        const result = await model.doStream({ prompt });
+        const result = await model.doStream({
+          prompt,
+          providerOptions: {
+            caesura: { turn: { id: String(turn), origin: 'customer' } },
+          },
+        });
         const chunks = [];
         for await (const chunk of result.stream) chunks.push(chunk);
         assert.equal(chunks[0].delta, 'ok');
       } else
-        assert.equal((await model.doGenerate({ prompt })).marker, 'generated');
-      await settle(store);
+        assert.equal(
+          (
+            await model.doGenerate({
+              prompt,
+              providerOptions: {
+                caesura: { turn: { id: String(turn), origin: 'customer' } },
+              },
+            })
+          ).marker,
+          'generated',
+        );
+      await settle(store, middleware.caesura);
       checkBackend(turn);
       assert.deepEqual(prompt, snapshot);
       assert.deepEqual(
@@ -230,3 +253,5 @@ for (const mode of ['sync', 'async']) {
 process.stdout.write(
   'Packed ESM/CJS imports, OpenAI APIs/streaming/background, and AI SDK wrapLanguageModel passed.\n',
 );
+
+await import('./lifecycle.mjs');

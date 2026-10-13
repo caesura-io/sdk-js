@@ -1,3 +1,4 @@
+// Explicit event IDs isolate backend serialization; lifecycle tests cover genuine-turn fallback and continuations.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type OpenAI from 'openai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -103,6 +104,7 @@ describe.each([
           responses: { create: responses },
         } as unknown as OpenAI,
         {
+          conversationId: 'fixture-conversation',
           apiKey: 'test',
           mode: 'sync',
           speakerNames: { agent: 'Support', customer: 'Visitor' },
@@ -145,7 +147,12 @@ describe.each([
                     : input,
               };
         const original = structuredClone(body);
-        const opts = { caesura: { conversationId: 'backend-conversation' } };
+        const opts = {
+          caesura: {
+            conversationId: 'backend-conversation',
+            turn: { id: String(includeOld), origin: 'customer' as const },
+          },
+        };
         if (api === 'chat') await client.chat.completions.create(body, opts);
         else await client.responses.create(body, opts);
         expect(body).toEqual(original);

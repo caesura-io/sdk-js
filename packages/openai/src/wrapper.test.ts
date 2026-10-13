@@ -43,6 +43,7 @@ describe('OpenAI proxy wrapper', () => {
 
   it('transparently passes through non-intercepted methods', async () => {
     const wrapped = createCaesura(mockOpenAI, {
+      conversationId: 'fixture-conversation',
       baseUrl: 'http://localhost:3000',
       apiKey: 'test-key',
     });
@@ -71,6 +72,7 @@ describe('OpenAI proxy wrapper', () => {
 
     const store = new MemoryCaesuraStore();
     const wrapped = createCaesura(mockOpenAI, {
+      conversationId: 'fixture-conversation',
       baseUrl: 'http://localhost:3000',
       apiKey: 'test-key',
       mode: 'sync',
@@ -140,6 +142,7 @@ describe('OpenAI proxy wrapper', () => {
 
     const store = new MemoryCaesuraStore();
     const wrapped = createCaesura(mockOpenAI, {
+      conversationId: 'fixture-conversation',
       baseUrl: 'http://localhost:3000',
       apiKey: 'test-key',
       mode: 'sync',
@@ -194,6 +197,7 @@ describe('wrapper review regressions', () => {
         : { output_text: 'hello' };
       const create = vi.fn().mockResolvedValue(output);
       const wrapped = createCaesura({ responses: { create } } as any, {
+        conversationId: 'fixture-conversation',
         apiKey: 'key',
         mode: 'sync',
         inject: { skillPrompt: 'Guidance', as: 'user' },
@@ -221,7 +225,11 @@ describe('wrapper review regressions', () => {
           ],
         };
         const before = structuredClone(body);
-        expect(await wrapped.responses.create(body)).toBe(output);
+        expect(
+          await wrapped.responses.create(body, {
+            caesura: { turn: { id: String(instructions), origin: 'customer' } },
+          }),
+        ).toBe(output);
         const sent = create.mock.calls.at(-1)![0];
         expect(sent.instructions).toBe(
           instructions?.startsWith('Original')
@@ -261,6 +269,7 @@ describe('wrapper review regressions', () => {
       }),
     };
     const wrapped = createCaesura({ chat: { completions } } as any, {
+      conversationId: 'fixture-conversation',
       apiKey: 'key',
     });
     expect(await wrapped.createConversation({ name: 'Support' })).toBe(
@@ -280,9 +289,10 @@ describe('wrapper review regressions', () => {
     const wrapped = createCaesura(
       { chat: { completions: { create } } } as any,
       {
+        conversationId: 'fixture-conversation',
         apiKey: 'key',
         mode: 'sync',
-        autoCreateConversation: true,
+
         onError: fail,
         onEvent: fail,
       },
@@ -301,7 +311,7 @@ describe('wrapper review regressions', () => {
       vi.fn().mockResolvedValue(Response.json({ isSame: true })),
     );
     const store = new MemoryCaesuraStore();
-    store.add('default', [
+    store.add('fixture-conversation', [
       {
         id: 'empty',
         analysis: { unknown: 'value' },
@@ -321,6 +331,7 @@ describe('wrapper review regressions', () => {
     const wrapped = createCaesura(
       { chat: { completions: { create } } } as any,
       {
+        conversationId: 'fixture-conversation',
         apiKey: 'key',
         mode: 'sync',
         store,
@@ -333,11 +344,11 @@ describe('wrapper review regressions', () => {
       } as any),
     ).resolves.toBe('ok');
     expect(
-      store.get('default').recommendations[0]?.injectedText,
+      store.get('fixture-conversation').recommendations[0]?.injectedText,
     ).toBeUndefined();
-    expect(store.get('default').recommendations[1]?.injectedText).toBe(
-      'advice',
-    );
+    expect(
+      store.get('fixture-conversation').recommendations[1]?.injectedText,
+    ).toBe('advice');
   });
 });
 
@@ -358,6 +369,7 @@ describe('OpenAI request lifecycle', () => {
       const fetcher = vi.fn().mockResolvedValue(response);
       const original = new OpenAI({ apiKey: 'openai-test', fetch: fetcher });
       const wrapped = createCaesura(original, {
+        conversationId: 'fixture-conversation',
         apiKey: 'caesura-test',
         persist: false,
       });

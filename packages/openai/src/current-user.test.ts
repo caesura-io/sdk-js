@@ -36,6 +36,7 @@ describe.each(['sync', 'async'] as const)(
               responses: { create },
             } as unknown as OpenAI,
             {
+              conversationId: 'fixture-conversation',
               apiKey: 'test',
               mode,
               store,
@@ -49,7 +50,10 @@ describe.each(['sync', 'async'] as const)(
                 { role, content: 'same text', ...(name ? { name } : {}) },
               ];
               const opts = {
-                caesura: { conversationId: 'existing-conversation' },
+                caesura: {
+                  conversationId: 'existing-conversation',
+                  turn: { id: `${role}-${name}`, origin: 'customer' as const },
+                },
               };
               if (api === 'chat')
                 await client.chat.completions.create(
@@ -75,6 +79,7 @@ describe.each(['sync', 'async'] as const)(
                   },
                   opts,
                 );
+              await client.caesura.flush();
               await vi.waitFor(() =>
                 expect(store.get('existing-conversation').inFlight).toBe(false),
               );

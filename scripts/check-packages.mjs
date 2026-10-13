@@ -1,4 +1,5 @@
 import process from 'node:process';
+import assert from 'node:assert/strict';
 // Clean consumer installation: only tarballs and public dependencies are visible.
 import { execFileSync } from 'node:child_process';
 import {
@@ -33,6 +34,39 @@ try {
   const archives = readdirSync(temporary)
     .filter((name) => name.endsWith('.tgz'))
     .map((name) => join(temporary, name));
+  // Inspect the exact publication boundary before a consumer can hide packaging errors.
+  for (const archive of archives) {
+    const names = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' })
+      .trim()
+      .split('\n');
+    for (const name of names)
+      assert.match(
+        name,
+        /^package\/(?:dist\/[^/]+|package\.json|README\.md|LICENSE)$/,
+      );
+    for (const entry of ['index.js', 'index.cjs', 'index.d.ts', 'index.d.cts'])
+      assert(
+        names.includes(`package/dist/${entry}`),
+        `Missing packaged entry: ${entry}`,
+      );
+    const manifest = JSON.parse(
+      execFileSync('tar', ['-xOf', archive, 'package/package.json'], {
+        encoding: 'utf8',
+      }),
+    );
+    const folder = manifest.name.split('/').at(-1);
+    const source = JSON.parse(
+      readFileSync(join(root, 'packages', folder, 'package.json'), 'utf8'),
+    );
+    assert.equal(manifest.version, source.version);
+    assert(!JSON.stringify(manifest).includes('workspace:'));
+    if (folder !== 'core') {
+      const core = JSON.parse(
+        readFileSync(join(root, 'packages/core/package.json'), 'utf8'),
+      );
+      assert.equal(manifest.dependencies['@caesura-io/core'], core.version);
+    }
+  }
   run('npm', [
     'install',
     '--ignore-scripts',
@@ -77,7 +111,33 @@ try {
     join(root, 'scripts/fixtures/runtime.mjs'),
     join(temporary, 'runtime.mjs'),
   );
+  copyFileSync(
+    join(root, 'scripts/fixtures/lifecycle.mjs'),
+    join(temporary, 'lifecycle.mjs'),
+  );
+  copyFileSync(
+    join(root, 'scripts/fixtures/identity.mjs'),
+    join(temporary, 'identity.mjs'),
+  );
+  copyFileSync(
+    join(root, 'scripts/fixtures/review.mjs'),
+    join(temporary, 'review.mjs'),
+  );
+  copyFileSync(
+    join(root, 'scripts/fixtures/audit-cancellation.mjs'),
+    join(temporary, 'audit-cancellation.mjs'),
+  );
+  for (const fixture of ['skill-prompt.mjs', 'skill-prompt-contract.mjs']) {
+    copyFileSync(
+      join(root, 'scripts/fixtures', fixture),
+      join(temporary, fixture),
+    );
+  }
+  run(process.execPath, ['skill-prompt.mjs']);
+  run(process.execPath, ['audit-cancellation.mjs']);
   run(process.execPath, ['runtime.mjs']);
+  run(process.execPath, ['identity.mjs']);
+  run(process.execPath, ['review.mjs']);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

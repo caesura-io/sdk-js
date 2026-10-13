@@ -17,7 +17,7 @@ const text = (m: any): string =>
     ? m.content
     : m.content.map((p: any) => p.text ?? '').join('');
 const format = (role: string, content: string) => ({ role, content });
-function setup(api: string, options: any): (input: any) => Promise<any[]> {
+function setup(api: string, options: any) {
   let sent: any;
   let turn = 0;
   const create = vi.fn(async (body) => {
@@ -31,14 +31,24 @@ function setup(api: string, options: any): (input: any) => Promise<any[]> {
     } as unknown as OpenAI,
     options,
   );
-  return async (input) => {
+  const run = async (input: any) => {
     const responses =
       api === 'responses' || (api === 'switch' && turn++ % 2 === 0);
-    if (responses) await client.responses.create({ model: 'test', input });
+    const opts = {
+      caesura: {
+        turn: { id: crypto.randomUUID(), origin: 'customer' as const },
+      },
+    };
+    if (responses)
+      await client.responses.create({ model: 'test', input }, opts);
     else
-      await client.chat.completions.create({ model: 'test', messages: input });
+      await client.chat.completions.create(
+        { model: 'test', messages: input },
+        opts,
+      );
     return sent[responses ? 'input' : 'messages'];
   };
+  return Object.assign(run, { flush: () => client.caesura.flush() });
 }
 
 describe.each(['sync', 'async'] as const)(
@@ -46,7 +56,7 @@ describe.each(['sync', 'async'] as const)(
   (mode) => {
     describe.each(['chat', 'responses', 'switch'] as const)('%s', (api) => {
       it.each(['user', 'assistant', 'system', 'developer'] as const)(
-        'cleans and reinjects %s guidance once in the default session',
+        'cleans and reinjects %s guidance once in the explicit conversation',
         async (as) => {
           const store = new MemoryCaesuraStore();
           const requests: AnalyzeRequestBody[] = [];
@@ -71,10 +81,11 @@ describe.each(['sync', 'async'] as const)(
             }),
           );
           const run = setup(api, {
+            conversationId: 'fixture-conversation',
             apiKey: 'test',
             mode,
             store,
-            autoCreateConversation: true,
+
             speakerNames: { agent: 'Support', customer: 'Visitor' },
             inject: { as, skillPrompt: '', template: '{analysis}' },
             onEvent: (e: CaesuraEvent) => events.push(e),
@@ -90,8 +101,9 @@ describe.each(['sync', 'async'] as const)(
             if (mode === 'async') {
               await vi.waitFor(() => expect(requests).toHaveLength(turn));
               release();
+              await run.flush();
               await vi.waitFor(() =>
-                expect(store.get('default').inFlight).toBe(false),
+                expect(store.get('fixture-conversation').inFlight).toBe(false),
               );
             }
             expect(history).toEqual(original);
@@ -117,8 +129,8 @@ describe.each(['sync', 'async'] as const)(
               }
             }
             expect(requests.at(-1)).toMatchObject({
-              conversationId: 'backend',
-              sessionId: 'backend',
+              conversationId: 'fixture-conversation',
+              sessionId: 'fixture-conversation',
               persist: true,
               currentUser: 'Support',
             });
@@ -143,7 +155,7 @@ describe.each(['sync', 'async'] as const)(
             );
             history = JSON.parse(JSON.stringify(forwarded));
           }
-          expect(creations).toBe(1);
+          expect(creations).toBe(0);
         },
       );
     });
@@ -166,6 +178,7 @@ it.each(['opposite role', 'named', 'explicit index', 'tool metadata'])(
       }),
     );
     const run = setup('responses', {
+      conversationId: 'fixture-conversation',
       apiKey: 'test',
       mode: 'sync',
       inject: { skillPrompt: '', template: '{analysis}' },
@@ -222,7 +235,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
       'fetch',
       vi.fn(async () => Response.json({ isSame: true })),
     );
-    store.add('default', [
+    store.add('fixture-conversation', [
       {
         id: 'r',
         analysis: 'guidance',
@@ -232,6 +245,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
       },
     ]);
     const run = setup('responses', {
+      conversationId: 'fixture-conversation',
       apiKey: 'test',
       mode: 'sync',
       store,
@@ -240,6 +254,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
     const first = await run([format('user', 'hello')]);
     now = 5000;
     const next = setup('responses', {
+      conversationId: 'fixture-conversation',
       apiKey: 'test',
       mode: 'sync',
       store,
@@ -258,7 +273,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
       format('user', 'next'),
     ]);
     expect(history).toEqual(original);
-    expect(store.get('default').recommendations).toHaveLength(1);
+    expect(store.get('fixture-conversation').recommendations).toHaveLength(1);
   },
 );
 
@@ -277,6 +292,7 @@ it('recognizes older individual and merged renderings after retention changes', 
     }),
   );
   const cfg = {
+    conversationId: 'fixture-conversation',
     apiKey: 'test',
     mode: 'sync',
     store,
@@ -321,6 +337,7 @@ it.each(['chat', 'responses', 'switch'])(
       }),
     );
     const run = setup(api, {
+      conversationId: 'fixture-conversation',
       apiKey: 'test',
       mode: 'sync',
       cadence: { everyTurns: 2 },
@@ -360,6 +377,7 @@ it('treats string Responses input as fresh dialogue even when it matches prior g
     }),
   );
   const run = setup('responses', {
+    conversationId: 'fixture-conversation',
     apiKey: 'test',
     mode: 'sync',
     inject: { skillPrompt: '', template: '{analysis}' },
@@ -389,6 +407,7 @@ it('does not guess a new injection role for already-recorded guidance', async ()
     }),
   );
   const cfg = {
+    conversationId: 'fixture-conversation',
     apiKey: 'test',
     mode: 'sync',
     store,
@@ -425,6 +444,7 @@ it('anchors new guidance after fresh string input matching an earlier injection'
     ),
   );
   const run = setup('responses', {
+    conversationId: 'fixture-conversation',
     apiKey: 'test',
     mode: 'sync',
     inject: { keepLast: 1, skillPrompt: '', template: '{analysis}' },
@@ -457,6 +477,7 @@ describe.each(['sync', 'async'] as const)(
           }),
         );
         const run = setup(api, {
+          conversationId: 'fixture-conversation',
           apiKey: 'test',
           mode,
           store,
@@ -464,13 +485,15 @@ describe.each(['sync', 'async'] as const)(
           inject: { as: 'assistant', skillPrompt: '', template: '{analysis}' },
         });
         await run([format('user', 'hello')]);
+        await run.flush();
         await vi.waitFor(() =>
-          expect(store.get('default').inFlight).toBe(false),
+          expect(store.get('fixture-conversation').inFlight).toBe(false),
         );
         // Obtain an actually emitted guidance block in background mode too.
         const emitted = await run([format('user', 'hello')]);
+        await run.flush();
         await vi.waitFor(() =>
-          expect(store.get('default').inFlight).toBe(false),
+          expect(store.get('fixture-conversation').inFlight).toBe(false),
         );
         const current = {
           ...format('assistant', 'guidance'),
@@ -479,8 +502,9 @@ describe.each(['sync', 'async'] as const)(
         const history = [...emitted, current];
         const original = structuredClone(history);
         const forwarded = await run(history);
+        await run.flush();
         await vi.waitFor(() =>
-          expect(store.get('default').inFlight).toBe(false),
+          expect(store.get('fixture-conversation').inFlight).toBe(false),
         );
         expect(requests.at(-1)!.messages).toEqual([
           {
@@ -499,7 +523,9 @@ describe.each(['sync', 'async'] as const)(
         ]);
         expect(forwarded).toEqual(original);
         expect(history).toEqual(original);
-        expect(store.get('default').recommendations).toHaveLength(1);
+        expect(store.get('fixture-conversation').recommendations).toHaveLength(
+          1,
+        );
       },
     );
   },
