@@ -20,6 +20,10 @@ export interface StoredRecommendation {
 /** Serializable per-conversation state; the engine always writes mutations explicitly. */
 export interface ConversationState {
   recommendations: StoredRecommendation[];
+  /** Next numeric backend message ID; persist together with transcriptMessageIds. */
+  nextMessageId?: number;
+  /** Stable application/provider IDs mapped to backend conversation message IDs. */
+  transcriptMessageIds?: Record<string, number>;
   /** Accepted customer IDs, including skipped/failed work. No automatic paid retries. */
   processedTurnIds?: string[];
   /** Stable cadence number for each accepted event, including retries after reload. */

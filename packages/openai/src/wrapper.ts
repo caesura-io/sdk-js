@@ -52,7 +52,8 @@ export function createCaesura(
   openai: OpenAI,
   options: CaesuraOpenAIOptions,
 ): CaesuraOpenAI {
-  const engine = createCaesuraEngine(options, packageIdentity);
+  const rootEngine = createCaesuraEngine(options, packageIdentity);
+  const engine = rootEngine;
   const cfg = engine.config;
 
   // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
@@ -75,10 +76,16 @@ export function createCaesura(
         });
         call.invocationId ??= crypto.randomUUID();
         checkOperation(call);
-        const perCallConvId = call.conversationId;
-        const convId = requireConversationId(
-          perCallConvId ?? cfg.conversationId,
-        );
+        if (call.stateless && call.conversationId !== undefined)
+          throw new TypeError(
+            'CaesuraO: stateless and conversationId cannot be combined.',
+          );
+        const engine = call.stateless
+          ? rootEngine.createStatelessScope()
+          : rootEngine;
+        const convId = call.stateless
+          ? undefined
+          : requireConversationId(call.conversationId ?? cfg.conversationId);
         call.signal = AbortSignal.any([
           engine.getSignal(convId),
           ...(call.signal ? [call.signal] : []),
@@ -170,7 +177,11 @@ export function createCaesura(
               ? { id: call.invocationId!, origin: 'internal' as const }
               : undefined),
         };
-        await engine.observe(convId, collected, observation);
+        const persistence = await engine.observeWithPersistence(
+          convId,
+          collected,
+          observation,
+        );
         checkOperation(call);
         const prepared = await engine.updateState(convId, (state) => {
           // 4. Inject recommendations and skill prompt
@@ -264,6 +275,7 @@ export function createCaesura(
         });
         checkOperation(call);
         const correlation = {
+          persistence,
           conversationId: convId,
           sdk: engine.sdk,
           customerTurnId:
@@ -294,7 +306,11 @@ export function createCaesura(
             prepared.modifiedBody,
             cleanRequestOptions,
           );
-          if (!options.onProviderEvent && !options.persistMessages)
+          if (
+            !cfg.persist &&
+            !options.onProviderEvent &&
+            !options.persistMessages
+          )
             return { request };
           const persistAgent = async (text: string, id?: string) => {
             if (!text) return;
@@ -325,7 +341,8 @@ export function createCaesura(
                     for (const message of responseMessages(value))
                       await persistAgent(message.text, message.id);
                 } else {
-                  const text = value.choices?.[0]?.message?.content;
+                  const message = value.choices?.[0]?.message;
+                  const text = message?.content || message?.refusal;
                   await persistAgent(
                     typeof text === 'string' ? text : '',
                     value.id,
@@ -519,14 +536,14 @@ function auditRequest(
                           message,
                         );
                     }
-                    if (part.type === 'response.output_text.delta')
+                    if (
+                      part.type === 'response.output_text.delta' ||
+                      part.type === 'response.refusal.delta'
+                    )
                       text += part.delta ?? '';
                     else
                       text +=
-                        part.choices?.find(
-                          (choice: any) =>
-                            choice.index === 0 || choice.index === undefined,
-                        )?.delta?.content ?? '';
+                        choice?.delta?.content || choice?.delta?.refusal || '';
                     if (
                       part.type === 'error' ||
                       part.type === 'response.failed' ||
@@ -625,8 +642,12 @@ function responseMessages(value: any): { id?: string; text: string }[] {
     .map((item: any, index: number) => ({
       id: item.id ?? (value.id ? `${value.id}:${index}` : undefined),
       text: (item.content ?? [])
-        .filter((part: any) => part.type === 'output_text')
-        .map((part: any) => part.text)
+        .filter(
+          (part: any) => part.type === 'output_text' || part.type === 'refusal',
+        )
+        .map((part: any) =>
+          part.type === 'refusal' ? part.refusal : part.text,
+        )
         .join(''),
     }));
 }

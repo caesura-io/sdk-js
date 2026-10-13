@@ -22,8 +22,7 @@ it.each(['chat', 'responses'] as const)(
         createdAtTurn: 0,
       },
     ]);
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn(async () => {
         now = 3000;
         return Response.json({ isSame: true });
@@ -53,3 +52,25 @@ it.each(['chat', 'responses'] as const)(
     expect(store.get('one').recommendations).toHaveLength(1);
   },
 );
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

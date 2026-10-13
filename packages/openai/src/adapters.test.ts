@@ -57,7 +57,7 @@ describe('OpenAI adapters', () => {
         text: 'user message',
       });
       expect(collected[1]).toEqual({
-        speakerRole: 'user',
+        speakerRole: 'assistant',
         speakerName: 'Agent',
         speakerIndex: 0,
         text: 'assistant reply',
@@ -255,13 +255,13 @@ describe('dialogue and tool-order regressions', () => {
         text: 'שלום',
       },
       {
-        speakerRole: 'user',
+        speakerRole: 'assistant',
         speakerName: 'Support',
         speakerIndex: 0,
         text: '😊',
       },
       {
-        speakerRole: 'user',
+        speakerRole: 'assistant',
         speakerName: 'Named',
         speakerIndex: 0,
         text: 'Let me check',
@@ -346,7 +346,7 @@ it.each([0, 1, 8])(
         ),
       ).toEqual([
         {
-          speakerRole: 'user',
+          speakerRole: 'assistant',
           speakerName: 'Agent',
           speakerIndex,
           text: 'current',

@@ -223,3 +223,78 @@ describe('response formats and conversation creation', () => {
     await expect(client.analyze({ messages: [] })).rejects.toThrow('aborted');
   });
 });
+
+describe('transcript acknowledgment', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each([
+    {},
+    { success: true, conversationId: 'other', messages: [{ id: 1 }] },
+    { success: true, conversationId: 'id', messages: [] },
+    'html',
+  ])('rejects malformed successful acknowledgments: %j', async (body) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json(body)),
+    );
+    const client = new CaesuraClient('https://api.caesurao.com', 'key', 1000);
+    await expect(
+      client.appendMessages('id', [{ id: 1, role: 'agent', text: 'Hi' }]),
+    ).rejects.toThrow('acknowledgment');
+  });
+  it('accepts every submitted ID without depending on server database IDs', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          success: true,
+          conversationId: 'id',
+          messages: [{ id: 1 }],
+        }),
+      ),
+    );
+    const client = new CaesuraClient('https://api.caesurao.com', 'key', 1000);
+    await client.appendMessages('id', [{ id: 1, role: 'agent', text: 'Hi' }]);
+  });
+  it.each(['analyze', 'counter', 'append', 'create'] as const)(
+    'classifies the HTTP %s operation timer as timeout',
+    async (operation) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      fetchMock.mockImplementation(
+        (_: unknown, init: RequestInit) =>
+          new Promise((_, reject) => {
+            const signal = init.signal!;
+            signal.addEventListener('abort', () => reject(signal.reason), {
+              once: true,
+            });
+            if (signal.aborted) reject(signal.reason);
+          }),
+      );
+      const client = new CaesuraClient('https://mock.invalid', 'test', 20);
+      const work =
+        operation === 'analyze'
+          ? client.analyze({ messages: [] })
+          : operation === 'counter'
+            ? client.getNextMessageId('id')
+            : operation === 'append'
+              ? client.appendMessages('id', [])
+              : client.createConversation();
+      let guard!: ReturnType<typeof setTimeout>;
+      try {
+        await expect(
+          Promise.race([
+            work,
+            new Promise((_, reject) => {
+              guard = setTimeout(
+                () => reject(new Error('HTTP timeout stalled')),
+                1000,
+              );
+            }),
+          ]),
+        ).rejects.toMatchObject({ name: 'TimeoutError' });
+      } finally {
+        clearTimeout(guard);
+      }
+    },
+  );
+});

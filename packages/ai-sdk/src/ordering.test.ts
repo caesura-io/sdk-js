@@ -13,8 +13,7 @@ describe.each(['sync', 'async'] as const)(
         const requests: AnalyzeRequestBody[] = [];
         const store = new MemoryCaesuraStore();
         let release: (() => void) | undefined;
-        vi.stubGlobal(
-          'fetch',
+        stubAnalysisFetch(
           vi.fn(async (_url, init) => {
             requests.push(JSON.parse(init.body));
             if (mode === 'async')
@@ -38,8 +37,8 @@ describe.each(['sync', 'async'] as const)(
         for (let turn = 1; turn <= 4; turn++) {
           const prompt: PromptMessageLike[] = Array.from(
             { length: turn },
-            (_, i) => ({
-              role: i % 2 ? 'assistant' : 'user',
+            () => ({
+              role: 'user',
               content: [{ type: 'text', text: 'same' }],
             }),
           );
@@ -82,8 +81,8 @@ describe.each(['sync', 'async'] as const)(
             original.flatMap((m, i) => [
               {
                 speakerRole: 'user',
-                speakerName: i % 2 ? 'Agent' : 'Customer',
-                speakerIndex: 1 - (i % 2),
+                speakerName: 'Customer',
+                speakerIndex: 1,
                 text: 'same',
               },
               ...(i + 1 < turn
@@ -102,3 +101,25 @@ describe.each(['sync', 'async'] as const)(
     );
   },
 );
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

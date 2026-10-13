@@ -95,85 +95,97 @@ for (const streaming of [false, true]) {
   assert.equal(audit[1].image.pathname, '/image.png');
 }
 for (const api of ['chat', 'responses'])
-  for (const complete of [false, true]) {
-    const events = [],
-      messages = [];
-    const chunks =
-      api === 'chat'
-        ? [
-            {
-              id: 'reply',
-              choices: [
-                {
-                  index: 0,
-                  delta: { content: 'unfinished sentence' },
-                  finish_reason: null,
-                },
-              ],
-            },
-          ]
-        : [
-            {
-              type: 'response.output_text.delta',
-              delta: 'unfinished sentence',
-            },
-          ];
-    if (complete) {
-      chunks.push(
+  for (const representation of ['text', 'refusal'])
+    for (const complete of [false, true]) {
+      const events = [],
+        messages = [];
+      const chunks =
         api === 'chat'
-          ? {
-              id: 'reply',
-              choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
-            }
-          : { type: 'response.completed', response: { id: 'reply' } },
-      );
-      if (api === 'chat')
-        chunks.push({ id: 'reply', choices: [], usage: { total_tokens: 9 } });
-    }
-    const native = new OpenAI({
-      apiKey: 'mock',
-      maxRetries: 0,
-      fetch: async () =>
-        new Response(
-          chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join(''),
-          { headers: { 'content-type': 'text/event-stream' } },
-        ),
-    });
-    const client = createCaesura(native, {
-      conversationId: 'id',
-      transport: {
-        async analyze() {
-          return { analysis: 'SAME' };
+          ? [
+              {
+                id: 'reply',
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      [representation === 'text' ? 'content' : 'refusal']:
+                        'unfinished sentence',
+                    },
+                    finish_reason: null,
+                  },
+                ],
+              },
+            ]
+          : [
+              {
+                type:
+                  representation === 'text'
+                    ? 'response.output_text.delta'
+                    : 'response.refusal.delta',
+                delta: 'unfinished sentence',
+              },
+            ];
+      if (complete) {
+        chunks.push(
+          api === 'chat'
+            ? {
+                id: 'reply',
+                choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+              }
+            : { type: 'response.completed', response: { id: 'reply' } },
+        );
+        if (api === 'chat')
+          chunks.push({ id: 'reply', choices: [], usage: { total_tokens: 9 } });
+      }
+      const native = new OpenAI({
+        apiKey: 'mock',
+        maxRetries: 0,
+        fetch: async () =>
+          new Response(
+            chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join(''),
+            { headers: { 'content-type': 'text/event-stream' } },
+          ),
+      });
+      const client = createCaesura(native, {
+        conversationId: 'id',
+        transport: {
+          async analyze() {
+            return { analysis: 'SAME' };
+          },
         },
-      },
-      onProviderEvent(e) {
-        events.push(e);
-      },
-      persistMessages(b) {
-        messages.push(...b.messages);
-      },
-    });
-    const stream = await (api === 'chat'
-      ? client.chat.completions.create({
-          model: 'test',
-          messages: [],
-          stream: true,
-        })
-      : client.responses.create({ model: 'test', input: [], stream: true }));
-    const actual = [];
-    for await (const chunk of stream) actual.push(chunk);
-    assert.deepEqual(actual, chunks);
-    const terminal = events.find((e) => e.type === 'stream-end');
-    assert.equal(terminal.status, complete ? 'completed' : 'incomplete');
-    assert.equal(
-      messages.filter((m) => m.role === 'agent').length,
-      complete ? 1 : 0,
-    );
-    if (complete && api === 'chat') {
-      assert.equal(terminal.value.finishReason, 'length');
-      assert.equal(terminal.value.usage.total_tokens, 9);
+        onProviderEvent(e) {
+          events.push(e);
+        },
+        persistMessages(b) {
+          messages.push(...b.messages);
+        },
+      });
+      const stream = await (api === 'chat'
+        ? client.chat.completions.create({
+            model: 'test',
+            messages: [],
+            stream: true,
+          })
+        : client.responses.create({ model: 'test', input: [], stream: true }));
+      const actual = [];
+      for await (const chunk of stream) actual.push(chunk);
+      assert.deepEqual(actual, chunks);
+      const terminal = events.find((e) => e.type === 'stream-end');
+      assert.equal(terminal.status, complete ? 'completed' : 'incomplete');
+      assert.equal(
+        messages.filter((m) => m.role === 'agent').length,
+        complete ? 1 : 0,
+      );
+      if (complete)
+        assert.equal(
+          messages.find((m) => m.role === 'agent').text,
+          'unfinished sentence',
+        );
+      if (complete && api === 'chat') {
+        assert.equal(terminal.value.finishReason, 'length');
+        assert.equal(terminal.value.usage.total_tokens, 9);
+      }
     }
-  }
 for (const finish of [false, true]) {
   const events = [],
     messages = [];

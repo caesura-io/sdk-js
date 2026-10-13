@@ -46,10 +46,12 @@ export type CaesuraMiddlewareWithConversations = CaesuraMiddleware & {
 export function caesuraMiddleware(
   config: CaesuraConfig,
 ): CaesuraMiddlewareWithConversations {
-  const engine = createCaesuraEngine(config, packageIdentity);
+  const rootEngine = createCaesuraEngine(config, packageIdentity);
+  const engine = rootEngine;
   const cfg = engine.config;
 
   const persistAgent = async (
+    engine: ReturnType<typeof createCaesuraEngine>,
     correlation: Correlation,
     text: string,
     signal?: AbortSignal,
@@ -79,7 +81,12 @@ export function caesuraMiddleware(
   };
   const captures = new WeakMap<
     object,
-    { correlation: Correlation; analysisIds: string[]; deadline?: number }
+    {
+      engine: ReturnType<typeof createCaesuraEngine>;
+      correlation: Correlation;
+      analysisIds: string[];
+      deadline?: number;
+    }
   >();
   return {
     caesura: engine,
@@ -99,9 +106,16 @@ export function caesuraMiddleware(
       call.invocationId ??= crypto.randomUUID();
       checkOperation(call);
 
-      const convId = requireConversationId(
-        call.conversationId ?? cfg.conversationId,
-      );
+      if (call.stateless && call.conversationId !== undefined)
+        throw new TypeError(
+          'CaesuraO: stateless and conversationId cannot be combined.',
+        );
+      const engine = call.stateless
+        ? rootEngine.createStatelessScope()
+        : rootEngine;
+      const convId = call.stateless
+        ? undefined
+        : requireConversationId(call.conversationId ?? cfg.conversationId);
 
       call.signal = AbortSignal.any([
         engine.getSignal(convId),
@@ -154,14 +168,18 @@ export function caesuraMiddleware(
         throw new TypeError(
           'CaesuraO: each dialogue position must select one nonempty dialogue message.',
         );
-      await engine.observe(convId, collected, {
-        ...call,
-        turn:
-          call.turn ??
-          (prompt.at(-1)?.role !== 'user'
-            ? { id: call.invocationId!, origin: 'internal' }
-            : undefined),
-      });
+      const persistence = await engine.observeWithPersistence(
+        convId,
+        collected,
+        {
+          ...call,
+          turn:
+            call.turn ??
+            (prompt.at(-1)?.role !== 'user'
+              ? { id: call.invocationId!, origin: 'internal' }
+              : undefined),
+        },
+      );
       checkOperation(call);
       return engine.updateState(convId, (state) => {
         // ── 2. INJECT ──────────────────────────────────────────────
@@ -242,7 +260,9 @@ export function caesuraMiddleware(
           prompt: modifiedPrompt as typeof params.prompt,
         };
         captures.set(result.prompt, {
+          engine,
           correlation: {
+            persistence,
             conversationId: convId,
             sdk: engine.sdk,
             customerTurnId:
@@ -262,6 +282,7 @@ export function caesuraMiddleware(
     },
     wrapGenerate: async ({ params, model, doGenerate }) => {
       const capture = captures.get(params.prompt)!;
+      const engine = capture.engine;
       const operation = {
         signal: params.abortSignal,
         deadline: capture.deadline,
@@ -295,6 +316,7 @@ export function caesuraMiddleware(
           value: result,
         });
         await persistAgent(
+          engine,
           capture.correlation,
           text,
           params.abortSignal,
@@ -323,6 +345,7 @@ export function caesuraMiddleware(
     },
     wrapStream: async ({ params, model, doStream }) => {
       const capture = captures.get(params.prompt)!;
+      const engine = capture.engine;
       const operation = {
         signal: params.abortSignal,
         deadline: capture.deadline,
@@ -371,6 +394,7 @@ export function caesuraMiddleware(
           });
           if (status === 'completed')
             await persistAgent(
+              engine,
               capture.correlation,
               text,
               params.abortSignal,

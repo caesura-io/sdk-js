@@ -108,3 +108,21 @@ void auditEngine.prepareProvider(
   },
   operation,
 );
+
+// Explicit ID-free fallback keeps successful creation typed as a backend ID.
+import type { CaesuraCallOptions, Correlation } from '@caesura-io/core';
+const creation: Promise<string | undefined> = engine.createConversation();
+const fallbackOptions: CaesuraCallOptions = { stateless: true };
+const statelessScope = engine.createStatelessScope();
+const outcome: Promise<'requested' | 'disabled' | undefined> =
+  statelessScope.observeWithPersistence(undefined, [
+    { speakerRole: 'user', text: 'hello' },
+  ]);
+const fallbackCorrelation: Correlation = { persistence: 'disabled' };
+void creation;
+void fallbackOptions;
+void outcome;
+void fallbackCorrelation;
+
+const observation: Promise<void> = engine.observe('existing', []);
+void observation;

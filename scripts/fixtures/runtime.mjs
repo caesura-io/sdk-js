@@ -1,4 +1,4 @@
-/* global Response, ReadableStream, setTimeout, structuredClone */
+/* global Response, ReadableStream, setTimeout, structuredClone, URL */
 import process from 'node:process';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -21,16 +21,47 @@ const settle = async (store, engine) => {
   assert.equal(store.get('one').inFlight, false);
 };
 const backend = [];
+const saved = new Map();
+let counterReads = 0;
+const resetBackend = () => {
+  backend.length = 0;
+  saved.clear();
+  counterReads = 0;
+};
 globalThis.fetch = async (url, init) => {
-  assert.equal(String(url), 'https://api.caesurao.com/api/analyze');
-  backend.push(JSON.parse(init.body));
+  const target = new URL(url);
+  assert.equal(target.origin, 'https://api.caesurao.com');
+  if (target.pathname === '/api/conversation/messages' && !init.body) {
+    assert.equal(target.searchParams.get('conversationId'), 'one');
+    counterReads++;
+    return Response.json({
+      success: true,
+      conversationId: 'one',
+      nextMessageId: 1,
+    });
+  }
+  const body = JSON.parse(init.body);
+  assert.equal(body.conversationId, 'one');
+  if (target.pathname === '/api/conversation/messages') {
+    for (const message of body.messages) {
+      assert(Number.isInteger(message.id) && message.id > 0);
+      if (saved.has(message.id))
+        assert.deepEqual(saved.get(message.id), message);
+      else saved.set(message.id, message);
+    }
+    return Response.json({ success: true, ...body });
+  }
+  assert.equal(target.pathname, '/api/analyze');
+  assert.equal(saved.get(body.transcriptMessageId)?.role, 'user');
+  assert.equal(saved.get(body.transcriptMessageId)?.text, 'same 😊');
+  backend.push(body);
   return Response.json(backend.length === 1 ? 'advice' : { isSame: true });
 };
-const dialogue = (index) => ({
+const dialogue = (agent = false) => ({
   speakerRole: 'user',
-  speakerName: index % 2 ? 'Marilyn SDR' : 'Alan',
-  speakerIndex: index % 2 ? 0 : 1,
-  text: 'same 😊',
+  speakerName: agent ? 'Marilyn SDR' : 'Alan',
+  speakerIndex: agent ? 0 : 1,
+  text: agent ? 'ok' : 'same 😊',
 });
 const advice = { speakerRole: 'assistant', speakerIndex: -1, text: 'advice' };
 const config = (store, mode) => ({
@@ -39,6 +70,7 @@ const config = (store, mode) => ({
   mode,
   conversationId: 'one',
   persist: true,
+  failurePolicy: 'throw',
   speakerNames: { agent: 'Marilyn SDR', customer: 'Alan' },
   inject: { skillPrompt: '', template: '{analysis}' },
 });
@@ -47,14 +79,27 @@ function checkBackend(turn) {
   assert.equal(request.persist, true);
   assert.equal(request.currentUser, 'Marilyn SDR');
   assert.equal(request.conversationId, 'one');
-  const expected = Array.from({ length: turn }, (_, i) => dialogue(i));
+  assert.equal(backend.length, turn);
+  assert.equal(request.transcriptMessageId, turn * 2 - 1);
+  assert.equal(counterReads, 1);
+  assert.deepEqual(
+    [...saved.values()].map(({ id, role, text }) => ({ id, role, text })),
+    Array.from({ length: turn * 2 }, (_, i) => ({
+      id: i + 1,
+      role: i % 2 ? 'assistant' : 'user',
+      text: i % 2 ? 'ok' : 'same 😊',
+    })),
+  );
+  const expected = Array.from({ length: turn * 2 - 1 }, (_, i) =>
+    dialogue(i % 2 === 1),
+  );
   if (turn > 1) expected.splice(1, 0, advice);
   assert.deepEqual(request.messages, expected);
 }
 for (const mode of ['sync', 'async']) {
   for (const api of ['chat', 'responses', 'switch']) {
     for (const stream of [false, true]) {
-      backend.length = 0;
+      resetBackend();
       const store = new MemoryCaesuraStore();
       const sent = [];
       const original = new OpenAI({
@@ -64,10 +109,11 @@ for (const mode of ['sync', 'async']) {
           const body = JSON.parse(init.body);
           sent.push(body);
           const chat = String(url).includes('/chat/completions');
+          const replyId = `reply-${sent.length}`;
           if (body.stream) {
             const event = chat
               ? {
-                  id: 'chat',
+                  id: replyId,
                   object: 'chat.completion.chunk',
                   choices: [
                     { index: 0, delta: { content: 'ok' }, finish_reason: null },
@@ -78,18 +124,26 @@ for (const mode of ['sync', 'async']) {
                   delta: 'ok',
                   output_index: 0,
                   content_index: 0,
-                  item_id: 'msg',
+                  item_id: replyId,
                   sequence_number: 1,
                 };
+            const terminal = chat
+              ? {
+                  id: replyId,
+                  choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+                }
+              : { type: 'response.completed', response: { id: replyId } };
             return new Response(
-              `data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`,
+              [event, terminal]
+                .map((part) => `data: ${JSON.stringify(part)}\n\n`)
+                .join('') + 'data: [DONE]\n\n',
               { headers: { 'content-type': 'text/event-stream' } },
             );
           }
           return Response.json(
             chat
               ? {
-                  id: 'chat',
+                  id: replyId,
                   object: 'chat.completion',
                   choices: [
                     {
@@ -100,12 +154,12 @@ for (const mode of ['sync', 'async']) {
                   ],
                 }
               : {
-                  id: 'response',
+                  id: replyId,
                   object: 'response',
                   output: [
                     {
                       type: 'message',
-                      id: 'msg',
+                      id: replyId,
                       role: 'assistant',
                       status: 'completed',
                       content: [
@@ -121,7 +175,7 @@ for (const mode of ['sync', 'async']) {
       const history = [];
       for (let turn = 1; turn <= 4; turn++) {
         history.push({
-          role: turn % 2 ? 'user' : 'assistant',
+          role: 'user',
           content: 'same 😊',
         });
         const snapshot = structuredClone(history);
@@ -147,18 +201,19 @@ for (const mode of ['sync', 'async']) {
             assert.ok(chunk);
             chunks++;
           }
-          assert.equal(chunks, 1);
+          assert.equal(chunks, 2);
         }
         await settle(store, client.caesura);
         checkBackend(turn);
         assert.deepEqual(history, snapshot);
         assert.deepEqual(
           (sent.at(-1).input ?? sent.at(-1).messages).filter(
-            (m) => m.content === 'same 😊',
+            (m) => m.content === 'same 😊' || m.content === 'ok',
           ),
           history,
         );
         assert.equal(store.get('one').recommendations.length, 1);
+        history.push({ role: 'assistant', content: 'ok' });
       }
     }
   }
@@ -171,7 +226,7 @@ const aiMajor = Number(
 );
 for (const mode of ['sync', 'async']) {
   for (const stream of [false, true]) {
-    backend.length = 0;
+    resetBackend();
     const store = new MemoryCaesuraStore();
     const sent = [];
     const middleware = caesuraMiddleware(config(store, mode));
@@ -185,17 +240,27 @@ for (const mode of ['sync', 'async']) {
         supportedUrls: {},
         doGenerate: async (params) => {
           sent.push(params);
-          return { marker: 'generated' };
+          return {
+            marker: 'generated',
+            content: [{ type: 'text', text: 'ok' }],
+            response: { id: `reply-${sent.length}` },
+          };
         },
         doStream: async (params) => {
           sent.push(params);
           return {
+            response: { id: `reply-${sent.length}` },
             stream: new ReadableStream({
               start(controller) {
                 controller.enqueue({
                   type: 'text-delta',
                   id: '1',
                   delta: 'ok',
+                });
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason: 'stop',
+                  usage: {},
                 });
                 controller.close();
               },
@@ -207,7 +272,7 @@ for (const mode of ['sync', 'async']) {
     const prompt = [];
     for (let turn = 1; turn <= 4; turn++) {
       prompt.push({
-        role: turn % 2 ? 'user' : 'assistant',
+        role: 'user',
         content: [
           { type: 'text', text: 'same ' },
           { type: 'text', text: '😊' },
@@ -243,10 +308,16 @@ for (const mode of ['sync', 'async']) {
         sent
           .at(-1)
           .prompt.filter(
-            (m) => Array.isArray(m.content) && m.content.length === 2,
+            (m) =>
+              Array.isArray(m.content) &&
+              (m.content.length === 2 || m.content[0]?.text === 'ok'),
           ),
         prompt,
       );
+      prompt.push({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'ok' }],
+      });
     }
   }
 }

@@ -16,8 +16,8 @@ const duplicate = {
   isSame: true,
   recommendation: 'DUPLICATE MUST NOT BE INJECTED',
 };
-const roles = ['user', 'assistant', 'user', 'assistant'] as const;
-const names = ['Customer', 'Agent', 'Customer', 'Agent'];
+const roles = ['user', 'user', 'user', 'user'] as const;
+const names = ['Customer', 'Customer', 'Customer', 'Customer'];
 afterEach(() => vi.unstubAllGlobals());
 
 describe.each(['sync', 'async'] as const)(
@@ -59,7 +59,7 @@ describe.each(['sync', 'async'] as const)(
             saved.length === 1 ? originalAnalysis : duplicate,
           );
         });
-        vi.stubGlobal('fetch', fetcher);
+        stubAnalysisFetch(fetcher);
         const chat = vi.fn().mockResolvedValue({ choices: [] });
         const responses = vi.fn().mockResolvedValue({ output: [] });
         const client = createCaesura(
@@ -145,7 +145,7 @@ describe.each(['sync', 'async'] as const)(
           const utterance = {
             speakerRole: 'user',
             speakerName: names[turn],
-            speakerIndex: 1 - (turn % 2),
+            speakerIndex: 1,
             text,
           };
           const history = {
@@ -166,7 +166,7 @@ describe.each(['sync', 'async'] as const)(
           roles.map((_, i) => ({
             text,
             speakerName: names[i],
-            speakerIndex: 1 - (i % 2),
+            speakerIndex: 1,
           })),
         );
         expect(
@@ -180,3 +180,25 @@ describe.each(['sync', 'async'] as const)(
     );
   },
 );
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

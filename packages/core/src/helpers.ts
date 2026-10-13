@@ -281,7 +281,7 @@ export function normalizeDialogue(
     .map((m) => {
       const agent = m.origin
         ? m.origin === 'agent'
-        : m.speakerRole === 'assistant' || m.speakerIndex === 0;
+        : m.speakerRole === 'assistant';
       return {
         speakerRole: agent ? 'assistant' : 'user',
         speakerName: m.speakerName ?? (agent ? names.agent : names.customer),

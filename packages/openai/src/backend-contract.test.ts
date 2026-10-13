@@ -28,20 +28,20 @@ const scenarios: {
     retainHistory: true,
   },
   {
-    label: 'identical agent dialogue',
-    role: 'assistant',
+    label: 'identical customer dialogue',
+    role: 'user',
     text: 'Let me check',
     retainHistory: true,
   },
   {
-    label: 'JSON agent dialogue is transcript, not an analysis',
-    role: 'assistant',
-    text: '{"recommendation":"actual agent dialogue"}',
+    label: 'JSON customer dialogue is transcript, not an analysis',
+    role: 'user',
+    text: '{"recommendation":"actual customer dialogue"}',
     retainHistory: true,
   },
   {
-    label: 'explicit agent name',
-    role: 'assistant',
+    label: 'explicit customer name',
+    role: 'user',
     name: 'Specialist',
     text: 'same',
     retainHistory: true,
@@ -55,14 +55,14 @@ const scenarios: {
   },
   {
     label: 'only current dialogue fits the message limit',
-    role: 'assistant',
+    role: 'user',
     text: 'same',
     send: { maxMessages: 1 },
     retainHistory: false,
   },
   {
     label: 'partial old dialogue takes priority over analysis context',
-    role: 'assistant',
+    role: 'user',
     text: 'same',
     oldText: 'old '.repeat(100),
     send: { maxMessages: 3, maxInputChars: 100 },
@@ -70,7 +70,7 @@ const scenarios: {
   },
   {
     label: 'current dialogue character trimmed',
-    role: 'assistant',
+    role: 'user',
     text: 'prefix-current',
     send: { maxInputChars: 7 },
     persisted: 'current',
@@ -89,8 +89,7 @@ describe.each([
   (first, second) => {
     it.each(scenarios)('$label', async (scenario) => {
       const requests: AnalyzeRequestBody[] = [];
-      vi.stubGlobal(
-        'fetch',
+      stubAnalysisFetch(
         vi.fn(async (_url, init) => {
           requests.push(JSON.parse(init.body));
           return Response.json(previous);
@@ -142,7 +141,7 @@ describe.each([
             : {
                 model: 'test',
                 input:
-                  scenario.role === 'user' && !includeOld
+                  scenario.role === 'user' && !includeOld && !scenario.name
                     ? scenario.text
                     : input,
               };
@@ -208,3 +207,25 @@ describe.each([
     });
   },
 );
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

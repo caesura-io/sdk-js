@@ -13,8 +13,18 @@ it.each([undefined, openai, ai])(
       'fetch',
       vi.fn(async (url: string, init: RequestInit) => {
         requests.push({ url, init });
+        if (url.includes('/conversation/messages?'))
+          return Response.json({
+            success: true,
+            conversationId: 'opaque:id',
+            nextMessageId: 1,
+          });
         return Response.json(
-          url.endsWith('/conversation') ? { id: 'opaque:id' } : 'guidance',
+          url.endsWith('/conversation')
+            ? { id: 'opaque:id' }
+            : url.endsWith('/conversation/messages')
+              ? { success: true, ...JSON.parse(init.body as string) }
+              : 'guidance',
         );
       }),
     );
@@ -33,6 +43,8 @@ it.each([undefined, openai, ai])(
     );
     expect(requests.map((r) => r.url)).toEqual([
       'https://api.caesurao.com/api/conversation',
+      'https://api.caesurao.com/api/conversation/messages?conversationId=opaque%3Aid',
+      'https://api.caesurao.com/api/conversation/messages',
       'https://api.caesurao.com/api/analyze',
     ]);
     const expected = {
@@ -57,7 +69,7 @@ it.each([undefined, openai, ai])(
           ),
         ),
       ).toEqual(expected);
-      expect(init.body).not.toContain('not-on-wire');
+      expect(init.body ?? '').not.toContain('not-on-wire');
     }
   },
 );

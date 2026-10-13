@@ -127,7 +127,14 @@ try {
     join(root, 'scripts/fixtures/audit-cancellation.mjs'),
     join(temporary, 'audit-cancellation.mjs'),
   );
-  for (const fixture of ['skill-prompt.mjs', 'skill-prompt-contract.mjs']) {
+  for (const fixture of [
+    'skill-prompt.mjs',
+    'skill-prompt-contract.mjs',
+    'transcript-policy.mjs',
+    'participant-role-contract.mjs',
+    'failure-policy.mjs',
+    'failure-policy-contract.mjs',
+  ]) {
     copyFileSync(
       join(root, 'scripts/fixtures', fixture),
       join(temporary, fixture),
@@ -135,6 +142,8 @@ try {
   }
   run(process.execPath, ['skill-prompt.mjs']);
   run(process.execPath, ['audit-cancellation.mjs']);
+  run(process.execPath, ['transcript-policy.mjs']);
+  run(process.execPath, ['failure-policy.mjs']);
   run(process.execPath, ['runtime.mjs']);
   run(process.execPath, ['identity.mjs']);
   run(process.execPath, ['review.mjs']);

@@ -27,6 +27,14 @@ describe.each(['sync', 'async'] as const)(
         vi.stubGlobal(
           'fetch',
           vi.fn(async (url, init) => {
+            if (String(url).includes('/conversation/messages?'))
+              return Response.json({
+                success: true,
+                conversationId: new URL(url).searchParams.get('conversationId'),
+                nextMessageId: 1,
+              });
+            if (String(url).endsWith('/conversation/messages'))
+              return Response.json({ success: true, ...JSON.parse(init.body) });
             expect(url).toBe('https://api.caesurao.com/api/analyze');
             requests.push(JSON.parse(init.body));
             return Response.json({ isSame: true });
@@ -37,7 +45,7 @@ describe.each(['sync', 'async'] as const)(
           mode,
           speakerNames,
         });
-        for (const speakerRole of ['user', 'assistant'] as const) {
+        for (const speakerRole of ['user'] as const) {
           for (const speakerName of [undefined, 'Per-message override']) {
             const input = [{ speakerRole, speakerName, text: 'same text' }];
             const original = structuredClone(input);
@@ -68,7 +76,7 @@ describe.each(['sync', 'async'] as const)(
             expect(input).toEqual(original);
           }
         }
-        expect(requests).toHaveLength(4);
+        expect(requests).toHaveLength(2);
       },
     );
   },

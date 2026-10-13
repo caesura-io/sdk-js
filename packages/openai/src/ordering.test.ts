@@ -19,7 +19,7 @@ const cases: {
   dedup?: boolean;
   send?: SendConfig;
 }[] = [
-  { label: 'alternating participants' },
+  { label: 'repeated customer occurrences' },
   { label: 'repeated same participant', sameSpeaker: true },
   { label: 'deduplication gaps', dedup: true },
   { label: 'cadence gaps', cadence: 2 },
@@ -42,8 +42,7 @@ describe.each(['sync', 'async'] as const)(
         const requests: AnalyzeRequestBody[] = [];
         let release: (() => void) | undefined;
         let turn = 0;
-        vi.stubGlobal(
-          'fetch',
+        stubAnalysisFetch(
           vi.fn(async (_url, init) => {
             requests.push(JSON.parse(init.body));
             const requestedTurn = turn;
@@ -85,11 +84,10 @@ describe.each(['sync', 'async'] as const)(
         for (turn = 1; turn <= count; turn++) {
           const dialogue: AnalyzeMessage[] = Array.from(
             { length: turn },
-            (_, i) => ({
+            () => ({
               speakerRole: 'user',
-              speakerName:
-                scenario.sameSpeaker || i % 2 === 0 ? 'Customer' : 'Agent',
-              speakerIndex: scenario.sameSpeaker ? 1 : 1 - (i % 2),
+              speakerName: 'Customer',
+              speakerIndex: 1,
               text,
             }),
           );
@@ -295,3 +293,25 @@ it.each(['chat', 'responses'] as const)(
     expect(result.indices).toEqual([items.length - 2]);
   },
 );
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

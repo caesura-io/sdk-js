@@ -9,7 +9,7 @@ describe('OpenAI proxy wrapper', () => {
 
   beforeEach(() => {
     fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
+    stubAnalysisFetch(fetchMock);
 
     mockOpenAI = {
       chat: {
@@ -189,7 +189,7 @@ describe('wrapper review regressions', () => {
       const fetcher = vi
         .fn()
         .mockImplementation(() => Promise.resolve(Response.json(false)));
-      vi.stubGlobal('fetch', fetcher);
+      stubAnalysisFetch(fetcher);
       const output = stream
         ? (async function* () {
             yield { delta: 'hello' };
@@ -200,6 +200,7 @@ describe('wrapper review regressions', () => {
         conversationId: 'fixture-conversation',
         apiKey: 'key',
         mode: 'sync',
+        persist: false, // This fixture checks native identity with capture disabled.
         inject: { skillPrompt: 'Guidance', as: 'user' },
       });
       for (const instructions of [
@@ -219,8 +220,8 @@ describe('wrapper review regressions', () => {
             },
             {
               type: 'message',
-              role: 'assistant',
-              content: [{ type: 'output_text', text: 'answer' }],
+              role: 'user',
+              content: [{ type: 'input_text', text: 'answer' }],
             },
           ],
         };
@@ -257,8 +258,7 @@ describe('wrapper review regressions', () => {
   );
 
   it('exposes creation and preserves original resource receivers', async () => {
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn().mockResolvedValue(Response.json({ id: 'backend' })),
     );
     const completions = {
@@ -281,7 +281,7 @@ describe('wrapper review regressions', () => {
   });
 
   it('keeps the model request working when creation and all hooks fail', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    stubAnalysisFetch(vi.fn().mockRejectedValue(new Error('offline')));
     const fail = () => {
       throw new Error('hook');
     };
@@ -306,8 +306,7 @@ describe('wrapper review regressions', () => {
   });
 
   it('handles filtered rendered blocks without indexing the wrong recommendation', async () => {
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn().mockResolvedValue(Response.json({ isSame: true })),
     );
     const store = new MemoryCaesuraStore();
@@ -393,3 +392,25 @@ describe('OpenAI request lifecycle', () => {
     },
   );
 });
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

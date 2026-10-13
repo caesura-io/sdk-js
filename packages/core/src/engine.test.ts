@@ -12,7 +12,7 @@ const customerTurn = () => ({
 
 const dialogue: AnalyzeMessage[] = [
   { speakerRole: 'user', text: 'oldest dialogue' },
-  { speakerRole: 'assistant', text: 'newest dialogue' },
+  { speakerRole: 'user', text: 'newest dialogue' },
 ];
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -46,7 +46,7 @@ describe('engine regressions', () => {
       const fetcher = vi
         .fn()
         .mockImplementation(() => Promise.resolve(json(false)));
-      vi.stubGlobal('fetch', fetcher);
+      stubAnalysisFetch(fetcher);
       const engine = createCaesuraEngine({
         apiKey: 'key',
         mode,
@@ -57,7 +57,7 @@ describe('engine regressions', () => {
         {
           id: 'old',
           analysis: { long: 'history' },
-          afterMessageHash: hashMessage('Support', 'newest dialogue'),
+          afterMessageHash: hashMessage('Visitor', 'newest dialogue'),
           createdAtMs: 0,
           createdAtTurn: 0,
         },
@@ -68,8 +68,8 @@ describe('engine regressions', () => {
       expect(body.messages).toEqual([
         {
           speakerRole: 'user',
-          speakerName: 'Support',
-          speakerIndex: 0,
+          speakerName: 'Visitor',
+          speakerIndex: 1,
           text: 'logue',
         },
       ]);
@@ -82,10 +82,10 @@ describe('engine regressions', () => {
       expect(body).not.toHaveProperty('callType');
       const state = engine.store.get('id');
       expect(state.recommendations.at(-1)?.afterMessageHash).toBe(
-        hashMessage('Support', 'newest dialogue'),
+        hashMessage('Visitor', 'newest dialogue'),
       );
       expect(dialogue[1]).toEqual({
-        speakerRole: 'assistant',
+        speakerRole: 'user',
         text: 'newest dialogue',
       });
     },
@@ -93,7 +93,7 @@ describe('engine regressions', () => {
 
   it('preserves explicit speaker names and uses remaining budget for history', async () => {
     const fetcher = vi.fn().mockImplementation(() => Promise.resolve(json(0)));
-    vi.stubGlobal('fetch', fetcher);
+    stubAnalysisFetch(fetcher);
     const engine = createCaesuraEngine({
       apiKey: 'key',
       mode: 'sync',
@@ -110,7 +110,7 @@ describe('engine regressions', () => {
     await engine.observe('id', input);
     await engine.observe(
       'id',
-      [...input, { speakerRole: 'assistant', text: 'answer' }],
+      [...input, { speakerRole: 'user', text: 'answer' }],
       customerTurn(),
     );
     expect(JSON.parse(fetcher.mock.calls[1]![1].body).messages).toEqual([
@@ -118,8 +118,8 @@ describe('engine regressions', () => {
       { speakerRole: 'assistant', speakerIndex: -1, text: '0' },
       {
         speakerRole: 'user',
-        speakerName: 'Agent',
-        speakerIndex: 0,
+        speakerName: 'Customer',
+        speakerIndex: 1,
         text: 'answer',
       },
     ]);
@@ -129,7 +129,7 @@ describe('engine regressions', () => {
     'zero limits skip analysis and creation %j',
     async (send) => {
       const fetcher = vi.fn();
-      vi.stubGlobal('fetch', fetcher);
+      stubAnalysisFetch(fetcher);
       const engine = createCaesuraEngine({
         apiKey: 'key',
         mode: 'sync',
@@ -145,7 +145,7 @@ describe('engine regressions', () => {
     const fetcher = vi
       .fn()
       .mockImplementation(() => Promise.resolve(json('advice')));
-    vi.stubGlobal('fetch', fetcher);
+    stubAnalysisFetch(fetcher);
     const engine = createCaesuraEngine({
       apiKey: 'key',
       mode: 'sync',
@@ -174,8 +174,7 @@ describe('engine regressions', () => {
     { latest_speaker: 'Visitor', emoji: '😊', 'exact.key': 0 },
     { isSame: 'false' },
   ])('buffers arbitrary payload %j', async (analysis) => {
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn().mockImplementation(() => Promise.resolve(json(analysis))),
     );
     const events: CaesuraEvent[] = [];
@@ -196,8 +195,7 @@ describe('engine regressions', () => {
   it.each([null, '', '  ', [], {}, { isSame: true }, { is_same: true }])(
     'skips empty or explicitly duplicate payload %j',
     async (analysis) => {
-      vi.stubGlobal(
-        'fetch',
+      stubAnalysisFetch(
         vi.fn().mockImplementation(() => Promise.resolve(json(analysis))),
       );
       const engine = createCaesuraEngine({ apiKey: 'key', mode: 'sync' });
@@ -210,8 +208,7 @@ describe('engine regressions', () => {
     const fail = vi.fn(() => {
       throw new Error('hook failed');
     });
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn().mockImplementation(() => Promise.resolve(json('advice'))),
     );
     const engine = createCaesuraEngine({
@@ -235,7 +232,7 @@ describe('conversation lifecycle', () => {
       .fn()
       .mockResolvedValueOnce(json({ id: 'backend' }))
       .mockResolvedValueOnce(json('advice'));
-    vi.stubGlobal('fetch', fetcher);
+    stubAnalysisFetch(fetcher);
     const engine = createCaesuraEngine({
       apiKey: 'key',
       mode: 'sync',
@@ -273,7 +270,7 @@ describe('conversation lifecycle', () => {
             }),
         )
         .mockResolvedValueOnce(json('advice'));
-      vi.stubGlobal('fetch', fetcher);
+      stubAnalysisFetch(fetcher);
       const onError = vi.fn();
       const store = new MemoryCaesuraStore({
         maxConversations: 1,
@@ -320,7 +317,7 @@ describe('conversation lifecycle', () => {
 
   it('never creates implicitly, including disabled persistence', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json('advice'));
-    vi.stubGlobal('fetch', fetcher);
+    stubAnalysisFetch(fetcher);
     const engine = createCaesuraEngine({
       apiKey: 'key',
       mode: 'sync',
@@ -337,8 +334,7 @@ describe('conversation lifecycle', () => {
 
   it('keeps the originating turn for a delayed analysis', async () => {
     let finish!: (r: Response) => void;
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn(
         () =>
           new Promise<Response>((resolve) => {
@@ -362,8 +358,7 @@ it('contains rejected asynchronous observability callbacks', async () => {
   const fail = vi.fn(async () => {
     throw new Error('async hook failed');
   });
-  vi.stubGlobal(
-    'fetch',
+  stubAnalysisFetch(
     vi.fn().mockImplementation(() => Promise.resolve(json(false))),
   );
   const engine = createCaesuraEngine({
@@ -385,44 +380,30 @@ describe.each(['sync', 'async'] as const)(
     it.each([
       'plain agent reply',
       '{"recommendation":"this is agent dialogue"}',
-    ])('keeps repeated agent dialogue last: %s', async (text) => {
-      const requests: import('./client.js').AnalyzeRequestBody[] = [];
-      const analysis = { recommendation: 'Prior analysis' };
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async (_url, init) => {
-          requests.push(JSON.parse(init.body));
-          return json(analysis);
-        }),
-      );
-      const engine = createCaesuraEngine({
-        apiKey: 'test',
-        mode,
-        speakerNames: { agent: 'Support', customer: 'Visitor' },
-      });
-      const input: AnalyzeMessage[] = [{ speakerRole: 'assistant', text }];
-      for (let turn = 0; turn < 2; turn++) {
-        await engine.observe('existing-backend-id', input, customerTurn());
-        await engine.flush();
-      }
-      const utterance = {
-        speakerRole: 'user',
-        speakerName: 'Support',
-        speakerIndex: 0,
-        text,
-      };
-      expect(requests[0]!.messages).toEqual([utterance]);
-      expect(requests[1]!.messages).toEqual([
-        {
-          speakerRole: 'assistant',
-          speakerIndex: -1,
-          text: JSON.stringify(analysis),
-        },
-        utterance,
-      ]);
-      expect(requests[1]!.messages.at(-1)).toEqual(utterance);
-      expect(input).toEqual([{ speakerRole: 'assistant', text }]);
-    });
+    ])(
+      'rejects agent dialogue mislabeled as a customer turn: %s',
+      async (text) => {
+        const requests: import('./client.js').AnalyzeRequestBody[] = [];
+        const analysis = { recommendation: 'Prior analysis' };
+        stubAnalysisFetch(
+          vi.fn(async (_url, init) => {
+            requests.push(JSON.parse(init.body));
+            return json(analysis);
+          }),
+        );
+        const engine = createCaesuraEngine({
+          apiKey: 'test',
+          mode,
+          speakerNames: { agent: 'Support', customer: 'Visitor' },
+        });
+        const input: AnalyzeMessage[] = [{ speakerRole: 'assistant', text }];
+        await expect(
+          engine.observe('existing-backend-id', input, customerTurn()),
+        ).rejects.toMatchObject({ kind: 'configuration' });
+        expect(requests).toHaveLength(0);
+        expect(input).toEqual([{ speakerRole: 'assistant', text }]);
+      },
+    );
   },
 );
 
@@ -437,8 +418,7 @@ it.each([
   async (options) => {
     const requests: import('./client.js').AnalyzeRequestBody[] = [];
     const analysis = { recommendation: 'Repeated guidance', similarities: [1] };
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn(async (_url, init) => {
         requests.push(JSON.parse(init.body));
         return json(analysis);
@@ -463,3 +443,25 @@ it.each([
     ).toEqual([analysis, analysis]);
   },
 );
+
+// These fixtures assert analysis serialization; hosted persistence is covered separately.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

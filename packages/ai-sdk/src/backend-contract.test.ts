@@ -26,20 +26,20 @@ const scenarios: {
     retainHistory: true,
   },
   {
-    label: 'actual agent dialogue',
-    role: 'assistant',
+    label: 'actual customer dialogue',
+    role: 'user',
     text: 'Let me check',
     retainHistory: true,
   },
   {
-    label: 'JSON agent dialogue is not prior analysis',
-    role: 'assistant',
-    text: '{"recommendation":"actual agent dialogue"}',
+    label: 'JSON customer dialogue is not prior analysis',
+    role: 'user',
+    text: '{"recommendation":"actual customer dialogue"}',
     retainHistory: true,
   },
   {
-    label: 'explicit agent name',
-    role: 'assistant',
+    label: 'explicit customer name',
+    role: 'user',
     name: 'Specialist',
     text: 'same',
     retainHistory: true,
@@ -53,14 +53,14 @@ const scenarios: {
   },
   {
     label: 'only current utterance fits',
-    role: 'assistant',
+    role: 'user',
     text: 'same',
     send: { maxMessages: 1 },
     retainHistory: false,
   },
   {
     label: 'partial old dialogue takes priority over analysis context',
-    role: 'assistant',
+    role: 'user',
     text: 'same',
     oldText: 'old '.repeat(100),
     send: { maxMessages: 3, maxInputChars: 100 },
@@ -68,7 +68,7 @@ const scenarios: {
   },
   {
     label: 'character-trimmed current utterance',
-    role: 'assistant',
+    role: 'user',
     text: 'prefix-current',
     send: { maxInputChars: 7 },
     persisted: 'current',
@@ -82,8 +82,7 @@ describe.each(['generate', 'stream'] as const)(
   (type) => {
     it.each(scenarios)('$label', async (scenario) => {
       const requests: AnalyzeRequestBody[] = [];
-      vi.stubGlobal(
-        'fetch',
+      stubAnalysisFetch(
         vi.fn(async (_url, init) => {
           requests.push(JSON.parse(init.body));
           return Response.json(previous);
@@ -174,3 +173,25 @@ describe.each(['generate', 'stream'] as const)(
     });
   },
 );
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

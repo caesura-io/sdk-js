@@ -55,8 +55,7 @@ it.each(['edited', 'trimmed'] as const)(
 it('snapshots direct engine inputs and anchors before awaiting analysis', async () => {
   const requests: AnalyzeRequestBody[] = [];
   let release!: () => void;
-  vi.stubGlobal(
-    'fetch',
+  stubAnalysisFetch(
     vi.fn(async (_url, init) => {
       if (!release) {
         await new Promise<void>((resolve) => {
@@ -95,8 +94,7 @@ it('snapshots direct engine inputs and anchors before awaiting analysis', async 
 
 it('anchors before character trimming and preserves explicit indices', async () => {
   const requests: AnalyzeRequestBody[] = [];
-  vi.stubGlobal(
-    'fetch',
+  stubAnalysisFetch(
     vi.fn(async (_url, init) => {
       requests.push(JSON.parse(init.body));
       return Response.json(requests.length);
@@ -127,8 +125,7 @@ it.each(['text/plain', 'application/json'])(
   'preserves string history and its exact character budget from %s',
   async (contentType) => {
     const requests: AnalyzeRequestBody[] = [];
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn(async (_url, init) => {
         requests.push(JSON.parse(init.body));
         return new Response(
@@ -176,3 +173,25 @@ it.each(anchorVectors)(
     expect(dialogueAnchors(messages as AnalyzeMessage[])).toEqual(anchors);
   },
 );
+
+// These fixtures assert analysis serialization; hosted persistence is covered separately.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

@@ -4,6 +4,8 @@ import type {
   AnalysisTransport,
   CreationContext,
   SdkIdentity,
+  HostedTranscriptMessage,
+  TranscriptContext,
 } from './contracts.js';
 import type { CaesuraAnalysis } from './types.js';
 
@@ -21,6 +23,8 @@ export interface AnalyzeMessage {
 export interface AnalyzeRequestBody {
   conversationId?: string;
   sessionId?: string;
+  /** Stable customer message ID already uploaded through appendMessages. */
+  transcriptMessageId?: number;
   callType?: string;
   /** Guidance recipient, set by the engine to the configured agent speaker name. */
   currentUser?: string;
@@ -64,12 +68,18 @@ export class CaesuraClient {
     externalSignal?: AbortSignal,
   ): Promise<AnalyzeResult> {
     const ctrl = new AbortController();
-    const onAbort = () => ctrl.abort();
+    const onAbort = () => ctrl.abort(externalSignal?.reason);
     if (externalSignal) {
-      if (externalSignal.aborted) ctrl.abort();
+      if (externalSignal.aborted) ctrl.abort(externalSignal.reason);
       else externalSignal.addEventListener('abort', onAbort, { once: true });
     }
-    const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    const timer = setTimeout(
+      () =>
+        ctrl.abort(
+          new DOMException('CaesuraO: operation timed out.', 'TimeoutError'),
+        ),
+      this.timeoutMs,
+    );
 
     try {
       const res = await fetch(`${this.trimmedBase()}/api/analyze`, {
@@ -130,6 +140,140 @@ export class CaesuraClient {
     }
   }
 
+  /** Read the next numeric message ID when resuming a backend conversation. */
+  async getNextMessageId(
+    conversationId: string,
+    externalSignal?: AbortSignal,
+    sdk: SdkIdentity = sdkIdentity('http'),
+  ): Promise<number> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(
+      () =>
+        ctrl.abort(
+          new DOMException('CaesuraO: operation timed out.', 'TimeoutError'),
+        ),
+      this.timeoutMs,
+    );
+    try {
+      const res = await fetch(
+        `${this.trimmedBase()}/api/conversation/messages?conversationId=${encodeURIComponent(conversationId)}`,
+        {
+          headers: {
+            authorization: `Bearer ${this.apiKey}`,
+            ...sdkHeaders(sdk),
+          },
+          signal: externalSignal
+            ? AbortSignal.any([ctrl.signal, externalSignal])
+            : ctrl.signal,
+        },
+      );
+      if (!res.ok)
+        throw new Error(
+          `CaesuraO next message ID ${res.status}: ${await res.text()}`,
+        );
+      const body: unknown = await res.json();
+      if (
+        !body ||
+        typeof body !== 'object' ||
+        !('success' in body) ||
+        body.success !== true ||
+        !('conversationId' in body) ||
+        body.conversationId !== conversationId ||
+        !('nextMessageId' in body) ||
+        typeof body.nextMessageId !== 'number' ||
+        !Number.isInteger(body.nextMessageId) ||
+        body.nextMessageId < 1 ||
+        body.nextMessageId > 2147483647
+      )
+        throw new Error('CaesuraO next message ID: invalid counter response.');
+      return body.nextMessageId;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Save completed dialogue without triggering analysis. IDs are immutable per conversation. */
+  async appendMessages(
+    conversationId: string,
+    messages: readonly HostedTranscriptMessage[],
+    externalSignal?: AbortSignal,
+    sdk: SdkIdentity = sdkIdentity('http'),
+  ): Promise<void> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(
+      () =>
+        ctrl.abort(
+          new DOMException('CaesuraO: operation timed out.', 'TimeoutError'),
+        ),
+      this.timeoutMs,
+    );
+    try {
+      const res = await fetch(
+        `${this.trimmedBase()}/api/conversation/messages`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...sdkHeaders(sdk),
+            authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            conversationId,
+            messages: messages.map(
+              ({ id, role, text, speakerName, speakerIndex }) => ({
+                id,
+                role: role === 'customer' ? 'user' : 'assistant',
+                text,
+                speakerName,
+                speakerIndex,
+              }),
+            ),
+          }),
+          signal: externalSignal
+            ? AbortSignal.any([ctrl.signal, externalSignal])
+            : ctrl.signal,
+        },
+      );
+      if (!res.ok)
+        throw new Error(
+          `CaesuraO append messages ${res.status}: ${await res.text()}`,
+        );
+      const ack: unknown = await res.json();
+      const acknowledged =
+        ack &&
+        typeof ack === 'object' &&
+        'messages' in ack &&
+        Array.isArray(ack.messages)
+          ? ack.messages
+          : [];
+      if (
+        !ack ||
+        typeof ack !== 'object' ||
+        !('success' in ack) ||
+        ack.success !== true ||
+        !('conversationId' in ack) ||
+        ack.conversationId !== conversationId ||
+        !('messages' in ack) ||
+        !Array.isArray(ack.messages) ||
+        !messages.every((message) =>
+          acknowledged.some(
+            (saved: unknown) =>
+              saved &&
+              typeof saved === 'object' &&
+              'id' in saved &&
+              saved.id === message.id,
+          ),
+        )
+      ) {
+        throw new Error(
+          'CaesuraO append messages: invalid persistence acknowledgment.',
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Create once and reuse the backend ID. Explicit failures propagate. */
   async createConversation(
     options: CreateConversationOptions = {},
@@ -137,7 +281,13 @@ export class CaesuraClient {
     sdk: SdkIdentity = sdkIdentity('http'),
   ): Promise<string> {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    const timer = setTimeout(
+      () =>
+        ctrl.abort(
+          new DOMException('CaesuraO: operation timed out.', 'TimeoutError'),
+        ),
+      this.timeoutMs,
+    );
     try {
       const res = await fetch(`${this.trimmedBase()}/api/conversation`, {
         method: 'POST',
@@ -193,6 +343,24 @@ export class HttpAnalysisTransport implements AnalysisTransport {
       body,
       { includeCreditUsage: context.includeCreditUsage, sdk: context.sdk },
       context.signal,
+    );
+  }
+  getNextMessageId(context: TranscriptContext): Promise<number> {
+    return this.client.getNextMessageId(
+      context.conversationId,
+      context.signal,
+      context.sdk,
+    );
+  }
+  appendMessages(
+    messages: readonly HostedTranscriptMessage[],
+    context: TranscriptContext,
+  ): Promise<void> {
+    return this.client.appendMessages(
+      context.conversationId,
+      messages,
+      context.signal,
+      context.sdk,
     );
   }
   createConversation(

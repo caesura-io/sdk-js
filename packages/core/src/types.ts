@@ -139,8 +139,8 @@ export interface CaesuraConfig {
   conversationId?: string;
 
   /**
-   * Whether /api/analyze saves its final submitted utterance and analysis.
-   * This does not archive the complete transcript or load history. Default: true.
+   * Save customer turns, completed agent replies and analyses with the HTTP transport.
+   * Does not import supplied history. Explicit application hooks still run when false. Default: true.
    */
   persist?: boolean;
 
@@ -190,7 +190,7 @@ export type CaesuraEvent =
     }
   | {
       type: 'request';
-      conversationId: string;
+      conversationId?: string;
       queryTurn: number;
       /** Exactly what was sent to the backend. */
       body: AnalyzeRequestBody;
@@ -198,7 +198,7 @@ export type CaesuraEvent =
     }
   | {
       type: 'response';
-      conversationId: string;
+      conversationId?: string;
       queryTurn: number;
       /** The full, unmodified analysis value. */
       analysis: CaesuraAnalysis;
@@ -210,26 +210,26 @@ export type CaesuraEvent =
     }
   | {
       type: 'skipped';
-      conversationId: string;
+      conversationId?: string;
       turn: number;
       /** Why no backend call happened this turn. */
       reason: 'cadence-turns' | 'cadence-seconds' | 'in-flight' | 'no-messages';
     }
   | {
       type: 'buffered';
-      conversationId: string;
+      conversationId?: string;
       queryTurn: number;
       recommendationId: string;
     }
   | {
       type: 'deduped';
-      conversationId: string;
+      conversationId?: string;
       queryTurn: number;
       /** Explicit duplicate or empty payload -> nothing buffered. */
     }
   | {
       type: 'injected';
-      conversationId: string;
+      conversationId?: string;
       turn: number;
       /** The individual rendered recommendations that made up this block. */
       blocks: {
@@ -242,7 +242,7 @@ export type CaesuraEvent =
     }
   | {
       type: 'error';
-      conversationId: string;
+      conversationId?: string;
       error: unknown;
     };
 

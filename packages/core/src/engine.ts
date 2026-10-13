@@ -40,6 +40,10 @@ import {
 } from './contracts.js';
 import { DEFAULT_SKILL_PROMPT, DEFAULT_TEMPLATE } from './defaults.js';
 
+type TranscriptOutcome =
+  | true
+  | { failure: 'hosted' | 'required'; error: CaesuraError };
+
 let _idSeq = 0;
 const nextId = (): string => `caesura-${Date.now()}-${_idSeq++}`;
 
@@ -91,9 +95,7 @@ export function resolveConfig(user: CaesuraConfig): ResolvedConfig {
   }
   const onError = (error: unknown) => {
     try {
-      const result = (user.onError ?? ((e) => console.error('[caesura]', e)))(
-        error,
-      );
+      const result = user.onError?.(error);
       void Promise.resolve(result).catch(() => {});
     } catch {
       /* Observability must never interrupt model requests. */
@@ -144,9 +146,11 @@ export function resolveConfig(user: CaesuraConfig): ResolvedConfig {
 export interface CaesuraEngine {
   readonly config: ResolvedConfig;
   readonly sdk: SdkIdentity;
-  /** Await application transcript upserts; never triggers analysis. */
+  /** Isolated, ID-free state for one explicitly stateless provider invocation. */
+  createStatelessScope(): CaesuraEngine;
+  /** Save completed transcript messages in per-conversation submission order; never triggers analysis. */
   recordMessages(
-    conversationId: string,
+    conversationId: string | undefined,
     messages: readonly TranscriptMessage[],
     context?: ObservationOptions,
   ): Promise<void>;
@@ -154,26 +158,33 @@ export interface CaesuraEngine {
   readonly transport: AnalysisTransport;
   readonly store: CaesuraStore;
   /** Aborted by clear/reset/shutdown; obtain a fresh signal for each invocation. */
-  getSignal(convId: string): AbortSignal;
+  getSignal(convId: string | undefined): AbortSignal;
+  /** Returns undefined for recoverable creation failures under continue; never fabricates an ID. */
   createConversation(
     options?: CreateConversationOptions,
     observation?: ObservationOptions,
-  ): Promise<string>;
+  ): Promise<string | undefined>;
   emitEvent(event: CaesuraEvent): void;
   observe(
-    convId: string,
+    convId: string | undefined,
     collected: AnalyzeMessage[],
     options?: ObservationOptions,
   ): Promise<void>;
-  getState(convId: string): Promise<ConversationState>;
+  /** Observe and return the selected persistence mode for provider auditing, not a storage receipt. */
+  observeWithPersistence(
+    convId: string | undefined,
+    collected: AnalyzeMessage[],
+    options?: ObservationOptions,
+  ): Promise<'requested' | 'disabled' | undefined>;
+  getState(convId: string | undefined): Promise<ConversationState>;
   /** Serializes awaited read/modify/write, including detached stores. */
   updateState<T>(
-    convId: string,
+    convId: string | undefined,
     update: (state: ConversationState) => T | Promise<T>,
   ): Promise<T>;
-  /** Wait for work accepted before this call; returns errors even under continue policy. */
+  /** Await accepted analysis and transcript work; return analysis completions (including failures). */
   flush(convId?: string): Promise<AnalysisCompletion[]>;
-  clear(convId: string): Promise<void>;
+  clear(convId: string | undefined): Promise<void>;
   clearAll(): Promise<void>;
   shutdown(options?: { cancel?: boolean }): Promise<AnalysisCompletion[]>;
   audit(event: ProviderAuditEvent): void;
@@ -214,7 +225,37 @@ export function createCaesuraEngine(
   config: CaesuraConfig,
   integration?: SdkIdentity['integration'],
 ): CaesuraEngine {
+  return makeEngine(config, integration);
+}
+function makeEngine(
+  config: CaesuraConfig,
+  integration?: SdkIdentity['integration'],
+  statelessSignal?: AbortSignal,
+  parent?: {
+    closed: () => boolean;
+    collect: (completion: AnalysisCompletion) => void;
+    track: (work: Promise<unknown>) => void;
+  },
+): CaesuraEngine {
   const cfg = resolveConfig(config);
+  const stateless = statelessSignal !== undefined;
+  const validateId = (id: string | undefined) => {
+    if (!stateless) requireConversationId(id);
+    else if (id !== undefined)
+      throw new CaesuraError(
+        'configuration',
+        'CaesuraO: stateless scopes cannot use a conversationId.',
+      );
+  };
+  const emptyState = (): ConversationState => ({
+    recommendations: [],
+    turn: 0,
+    lastQueryTurn: 0,
+    lastQueryMs: 0,
+    inFlight: false,
+    lastAccessMs: Date.now(),
+  });
+  let transient = emptyState();
   const store = config.store ?? new MemoryCaesuraStore();
   if (typeof store.set !== 'function')
     throw new TypeError(
@@ -238,16 +279,41 @@ export function createCaesuraEngine(
   const emitEvent = (event: CaesuraEvent) =>
     safe(cfg.onEvent, event.type === 'error' ? event : structuredClone(event));
   let resetBarrier: Promise<void> = Promise.resolve();
-  const locks = new Map<string, Promise<unknown>>();
-  const queues = new Map<string, Promise<void>>();
-  const pending = new Map<string, Set<AbortController>>();
+  const locks = new Map<string | undefined, Promise<unknown>>();
+  const queues = new Map<string | undefined, Promise<void>>();
+  // Transcript hooks and uploads use their own FIFO, independent of short state locks.
+  const transcriptQueues = new Map<
+    string | undefined,
+    Promise<TranscriptOutcome>
+  >();
+  const pending = new Map<string | undefined, Set<AbortController>>();
   const completions: AnalysisCompletion[] = [];
-  const creations = new Set<Promise<string>>();
+  const creations = new Set<Promise<string | undefined>>();
+  // Weak ownership allows completed invocation scopes to be collected, including streams.
+  // Completion forwarding does not depend on retaining or polling the child engine.
+  const scopes = new Set<WeakRef<CaesuraEngine>>();
+  const scopeRegistry = new FinalizationRegistry<WeakRef<CaesuraEngine>>(
+    (ref) => scopes.delete(ref),
+  );
+  const scopeWork = new Set<Promise<unknown>>();
+  const track = (work: Promise<unknown>) => {
+    scopeWork.add(work);
+    parent?.track(work);
+    void work.finally(() => scopeWork.delete(work)).catch(() => {});
+  };
+  let scopeController = new AbortController();
+  const reported = new WeakSet<object>();
+  const reportError = (error: CaesuraError, conversationId?: string) => {
+    if (reported.has(error)) return;
+    reported.add(error);
+    cfg.onError(error);
+    emitEvent({ type: 'error', conversationId, error });
+  };
   let closed = false;
   const shutdownController = new AbortController();
-  const sessions = new Map<string, AbortController>();
-  const getSignal = (id: string) => {
-    requireConversationId(id);
+  const sessions = new Map<string | undefined, AbortController>();
+  const getSignal = (id: string | undefined) => {
+    validateId(id);
     let session = sessions.get(id);
     if (!session) {
       session = new AbortController();
@@ -257,11 +323,16 @@ export function createCaesuraEngine(
       session.abort(
         new CaesuraError('cancelled', 'CaesuraO: engine is shut down.'),
       );
-    return session.signal;
+    return statelessSignal
+      ? AbortSignal.any([session.signal, statelessSignal])
+      : session.signal;
   };
   // Only short state transactions hold this lock, never network work.
-  const locked = <T>(id: string, action: () => Promise<T>): Promise<T> => {
-    requireConversationId(id);
+  const locked = <T>(
+    id: string | undefined,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    validateId(id);
     const prior = locks.get(id) ?? Promise.resolve();
     const barrier = resetBarrier;
     const task = prior
@@ -276,23 +347,24 @@ export function createCaesuraEngine(
       .catch(() => {});
     return task;
   };
-  const read = async (id: string) => {
+  const read = async (id: string | undefined) => {
     try {
-      return structuredClone(await store.get(id));
+      return structuredClone(stateless ? transient : await store.get(id!));
     } catch (error) {
       throw failure(error, 'store');
     }
   };
-  const write = async (id: string, state: ConversationState) => {
+  const write = async (id: string | undefined, state: ConversationState) => {
     state.inFlight = false;
     try {
-      await store.set(id, structuredClone(state));
+      if (stateless) transient = structuredClone(state);
+      else await store.set(id!, structuredClone(state));
     } catch (error) {
       throw failure(error, 'store');
     }
   };
   const updateState = <T>(
-    id: string,
+    id: string | undefined,
     update: (state: ConversationState) => T | Promise<T>,
   ): Promise<T> =>
     locked(id, async () => {
@@ -306,32 +378,31 @@ export function createCaesuraEngine(
         cfg.onError(e);
         if (config.failurePolicy === 'throw' || e.kind === 'cancelled') throw e;
         // Continue with a transient state when storage is unavailable.
-        return update(new MemoryCaesuraStore().get(id));
+        return update(emptyState());
       }
     });
-  const getState = (id: string) =>
+  const getState = (id: string | undefined) =>
     locked(id, async () => {
       try {
         return await read(id);
       } catch (error) {
         cfg.onError(error);
         if (config.failurePolicy === 'throw') throw error;
-        return new MemoryCaesuraStore().get(id);
+        return emptyState();
       }
     });
-  const report = (completion: AnalysisCompletion) => {
+  const collect = (completion: AnalysisCompletion) => {
     completions.push(completion);
+    parent?.collect(completion);
+  };
+  const report = (completion: AnalysisCompletion) => {
+    collect(completion);
     safe(config.onCompletion, {
       ...copyProviderValue(completion),
       error: completion.error,
     });
     if (completion.error) {
-      emitEvent({
-        type: 'error',
-        conversationId: completion.correlation.conversationId,
-        error: completion.error,
-      });
-      cfg.onError(completion.error);
+      reportError(completion.error, completion.correlation.conversationId);
     }
   };
   const create = async (
@@ -360,12 +431,12 @@ export function createCaesuraEngine(
       );
     return id;
   };
-  const recordMessages = async (
-    id: string,
+  const writeMessages = async (
+    id: string | undefined,
     messages: readonly TranscriptMessage[],
     options: ObservationOptions = {},
   ) => {
-    requireConversationId(id);
+    validateId(id);
     options = snapshotObservation(options);
     const snapshot = structuredClone(messages);
     for (const message of snapshot) {
@@ -380,7 +451,9 @@ export function createCaesuraEngine(
           'CaesuraO: transcript entries require an ID, customer/agent role and text.',
         );
     }
-    const signal = AbortSignal.any([
+    const operationDeadline = Date.now() + cfg.timeoutMs;
+    const deadline = Math.min(options.deadline ?? Infinity, operationDeadline);
+    const callerSignal = AbortSignal.any([
       getSignal(id),
       ...(options.signal ? [options.signal] : []),
       ...(options.deadline !== undefined
@@ -391,57 +464,188 @@ export function createCaesuraEngine(
           ]
         : []),
     ]);
-    check(signal);
-    if (options.deadline !== undefined && options.deadline <= Date.now())
-      throw new CaesuraError(
-        'timeout',
-        'CaesuraO: transcript deadline exceeded.',
-      );
-    try {
-      await abortable(
-        Promise.resolve().then(() =>
-          config.persistMessages?.({
-            correlation: {
-              conversationId: id,
-              sdk,
-              customerTurnId:
-                options.turn?.origin === 'customer'
-                  ? options.turn.id
-                  : undefined,
-              invocationId: options.invocationId,
-              metadata: options.metadata,
-            },
-            messages: snapshot,
+    checkOperation({ ...options, signal: callerSignal });
+    const signal = AbortSignal.any([
+      callerSignal,
+      AbortSignal.timeout(
+        Math.ceil(Math.max(0, operationDeadline - Date.now())),
+      ),
+    ]);
+    const previous = transcriptQueues.get(id) ?? Promise.resolve();
+    if (!stateless && store instanceof MemoryCaesuraStore) store.pin(id!);
+    let hostedFailure = false;
+    let transcriptError: CaesuraError | undefined;
+    const classify = (error: unknown) => {
+      if (transcriptError) return transcriptError;
+      let e = failure(error, 'store');
+      try {
+        checkOperation({ ...options, signal: callerSignal });
+      } catch (interruption) {
+        e = failure(interruption, 'store');
+      }
+      return (transcriptError = e);
+    };
+    const task = (async () => {
+      const hostedCall = async <T>(work: () => Promise<T>): Promise<T> => {
+        hostedFailure = true;
+        const result = await abortable(work(), signal);
+        hostedFailure = false;
+        return result;
+      };
+      try {
+        await previous.catch(() => {});
+        check(signal);
+        await abortable(
+          Promise.resolve().then(() => {
+            check(signal);
+            return config.persistMessages?.({
+              correlation: {
+                conversationId: id,
+                sdk,
+                customerTurnId:
+                  options.turn?.origin === 'customer'
+                    ? options.turn.id
+                    : undefined,
+                invocationId: options.invocationId,
+                metadata: options.metadata,
+              },
+              messages: structuredClone(snapshot),
+            });
           }),
-        ),
-        signal,
-      );
-      check(signal);
+          signal,
+        );
+        if (cfg.persist && transport.appendMessages && snapshot.length) {
+          const context = {
+            conversationId: id!,
+            sdk,
+            signal,
+            deadline,
+            customerTurnId:
+              options.turn?.origin === 'customer' ? options.turn.id : undefined,
+            invocationId: options.invocationId,
+            metadata: options.metadata,
+          };
+          const hosted = await abortable(
+            locked(id, async () => {
+              check(signal);
+              const state = await read(id);
+              if (state.nextMessageId === undefined) {
+                if (!transport.getNextMessageId)
+                  throw new CaesuraError(
+                    'configuration',
+                    'CaesuraO: transcript transport must support message ID initialization.',
+                  );
+                state.nextMessageId = await hostedCall(() =>
+                  transport.getNextMessageId!(context),
+                );
+              }
+              if (
+                !Number.isInteger(state.nextMessageId) ||
+                state.nextMessageId < 1 ||
+                state.nextMessageId > 2147483648
+              )
+                throw new CaesuraError(
+                  'store',
+                  'CaesuraO: invalid stored next message ID.',
+                );
+              const ids = (state.transcriptMessageIds ??= {});
+              const entries = snapshot.map((message) => {
+                if (!Object.hasOwn(ids, message.id)) {
+                  if (state.nextMessageId! > 2147483647)
+                    throw new CaesuraError(
+                      'store',
+                      'CaesuraO: conversation message IDs exhausted.',
+                    );
+                  Object.defineProperty(ids, message.id, {
+                    value: state.nextMessageId!++,
+                    enumerable: true,
+                    configurable: true,
+                    writable: true,
+                  });
+                }
+                const backendId = ids[message.id]!;
+                if (
+                  !Number.isInteger(backendId) ||
+                  backendId < 1 ||
+                  backendId > 2147483647
+                )
+                  throw new CaesuraError(
+                    'store',
+                    'CaesuraO: invalid stored transcript message ID.',
+                  );
+                return { ...message, id: backendId };
+              });
+              check(signal);
+              await write(id, state);
+              return entries;
+            }),
+            signal,
+          );
+          check(signal);
+          await hostedCall(() => transport.appendMessages!(hosted, context));
+          check(signal);
+        }
+        check(signal);
+        return true as const;
+      } catch (error) {
+        const e = classify(error);
+        reportError(e, id);
+        if (
+          config.failurePolicy === 'throw' ||
+          callerSignal.aborted ||
+          e.kind === 'cancelled' ||
+          (e.kind === 'timeout' && !hostedFailure)
+        )
+          throw e;
+        return {
+          failure: hostedFailure ? ('hosted' as const) : ('required' as const),
+          error: e,
+        };
+      } finally {
+        if (!stateless && store instanceof MemoryCaesuraStore) store.unpin(id!);
+      }
+    })();
+    transcriptQueues.set(id, task);
+    parent?.track(task);
+    void task
+      .finally(() => {
+        if (transcriptQueues.get(id) === task) transcriptQueues.delete(id);
+      })
+      .catch(() => {});
+    // A queued caller cancels promptly without letting later work overtake its predecessor.
+    try {
+      return await abortable(task, signal);
     } catch (error) {
-      const e = failure(error, 'store');
-      cfg.onError(e);
-      emitEvent({ type: 'error', conversationId: id, error: e });
-      if (
-        config.failurePolicy === 'throw' ||
-        e.kind === 'cancelled' ||
-        e.kind === 'timeout'
-      )
-        throw e;
+      const e = classify(error);
+      if (hostedFailure && e.kind === 'timeout' && !callerSignal.aborted)
+        return await task;
+      throw e;
     }
   };
+  const recordMessages: CaesuraEngine['recordMessages'] = async (...args) => {
+    await writeMessages(...args);
+  };
   const observe = async (
-    convId: string,
+    convId: string | undefined,
     input: AnalyzeMessage[],
     options: ObservationOptions = {},
   ) => {
-    requireConversationId(convId);
+    validateId(convId);
     options = snapshotObservation(options);
+    checkOperation(options);
     options.signal = AbortSignal.any([
       getSignal(convId),
       ...(options.signal ? [options.signal] : []),
+      ...(options.deadline !== undefined
+        ? [
+            AbortSignal.timeout(
+              Math.ceil(Math.max(0, options.deadline - Date.now())),
+            ),
+          ]
+        : []),
     ]);
     check(options.signal);
-    if (closed)
+    if (closed || parent?.closed())
       throw new CaesuraError('cancelled', 'CaesuraO: engine is shut down.');
     // Snapshot before scheduling/awaiting. Selection metadata never enters HTTP bodies.
     const collected = normalizeDialogue(
@@ -464,6 +668,11 @@ export function createCaesuraEngine(
       });
       return;
     }
+    if (collected.at(-1)?.speakerRole !== 'user')
+      throw new CaesuraError(
+        'configuration',
+        'CaesuraO: a customer turn requires customer dialogue as its latest message.',
+      );
     if (!turn.id.trim())
       throw new TypeError('CaesuraO: customer turn ID must not be empty.');
     const correlation: Correlation = {
@@ -477,37 +686,24 @@ export function createCaesuraEngine(
         : undefined,
     };
     const ctrl = new AbortController();
-    const onAbort = () =>
-      ctrl.abort(
-        new CaesuraError('cancelled', 'CaesuraO: cancelled.', {
-          cause: options.signal?.reason,
-        }),
-      );
+    const onAbort = () => {
+      try {
+        check(options.signal);
+      } catch (error) {
+        ctrl.abort(error);
+      }
+    };
     options.signal?.addEventListener('abort', onAbort, { once: true });
     const controllers = pending.get(convId) ?? new Set<AbortController>();
     pending.set(convId, controllers);
     controllers.add(ctrl);
-    if (store instanceof MemoryCaesuraStore) store.pin(convId);
-    const deadline = Math.min(
-      options.deadline ?? Infinity,
-      Date.now() + cfg.timeoutMs,
-    );
-    if (deadline <= Date.now())
-      ctrl.abort(
-        new CaesuraError('timeout', 'CaesuraO: analysis deadline exceeded.'),
-      );
-    const timer = setTimeout(
-      () =>
-        ctrl.abort(
-          new CaesuraError('timeout', 'CaesuraO: analysis deadline exceeded.'),
-        ),
-      Math.max(0, deadline - Date.now()),
-    );
+    if (!stateless && store instanceof MemoryCaesuraStore) store.pin(convId!);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const context: AnalysisContext = {
       ...correlation,
       sdk,
       signal: ctrl.signal,
-      deadline,
+      deadline: Infinity,
       includeCreditUsage:
         cfg.includeCreditUsage ||
         !!config.persistAnalysis ||
@@ -515,9 +711,10 @@ export function createCaesuraEngine(
     };
     const current = collected.at(-1)!;
     // Reserve the FIFO position and pin state before awaiting transcript storage.
-    const transcript =
-      config.persistMessages && current.speakerRole === 'user'
-        ? recordMessages(
+    const transcript = (
+      (config.persistMessages || (cfg.persist && transport.appendMessages)) &&
+      current.speakerRole === 'user'
+        ? writeMessages(
             convId,
             [
               {
@@ -528,15 +725,40 @@ export function createCaesuraEngine(
                 speakerIndex: current.speakerIndex,
               },
             ],
-            { ...options, turn, signal: ctrl.signal, deadline },
+            { ...options, turn },
           )
-        : Promise.resolve();
+        : Promise.resolve(true as const)
+    ).then((outcome) => {
+      // Storage has its own budget. Queue waiting after storage counts against analysis.
+      context.deadline = Math.min(
+        options.deadline ?? Infinity,
+        Date.now() + cfg.timeoutMs,
+      );
+      const expire = () =>
+        ctrl.abort(
+          new CaesuraError('timeout', 'CaesuraO: analysis deadline exceeded.'),
+        );
+      if (context.deadline <= Date.now()) expire();
+      else timer = setTimeout(expire, cfg.timeoutMs);
+      return outcome;
+    });
     void transcript.catch(() => {});
     const run = async () => {
       let result: import('./client.js').AnalyzeResult | undefined;
       let queryTurn = 0;
       try {
-        await abortable(transcript, ctrl.signal);
+        const transcriptResult = await abortable(transcript, ctrl.signal);
+        if (
+          transcriptResult !== true &&
+          transcriptResult.failure === 'required'
+        ) {
+          report({
+            correlation,
+            status: 'failed',
+            error: transcriptResult.error,
+          });
+          return;
+        }
         if (ctrl.signal.aborted) throw ctrl.signal.reason;
         const state = await locked(convId, async () => {
           const current = await read(convId);
@@ -604,16 +826,25 @@ export function createCaesuraEngine(
           report({ correlation, status: 'skipped' });
           return;
         }
+        const persist = cfg.persist && transcriptResult === true;
         const body: AnalyzeRequestBody = {
-          conversationId: convId,
-          sessionId: convId,
+          ...(!stateless && transcriptResult === true
+            ? { conversationId: convId, sessionId: convId }
+            : {}),
+          ...(persist &&
+          transport.appendMessages &&
+          current.speakerRole === 'user'
+            ? { transcriptMessageId: state.transcriptMessageIds?.[turn.id] }
+            : {}),
           callType: cfg.callType,
           currentUser: cfg.speakerNames.agent,
           messages: buildAnalyzeMessages(collected, state, cfg.send),
-          persist: cfg.persist,
+          persist,
           calculateSimilarities: cfg.calculateSimilarities,
           similarityThreshold: cfg.similarityThreshold,
         };
+        correlation.persistence = persist ? 'requested' : 'disabled';
+        context.persistence = correlation.persistence;
         emitEvent({
           type: 'request',
           conversationId: convId,
@@ -752,38 +983,60 @@ export function createCaesuraEngine(
         clearTimeout(timer);
         options.signal?.removeEventListener('abort', onAbort);
         controllers.delete(ctrl);
-        if (store instanceof MemoryCaesuraStore) store.unpin(convId);
+        if (!stateless && store instanceof MemoryCaesuraStore)
+          store.unpin(convId!);
         if (!controllers.size) pending.delete(convId);
       }
     };
     const previous = queues.get(convId) ?? Promise.resolve();
     const task = previous.catch(() => {}).then(run);
     queues.set(convId, task);
+    parent?.track(task);
     void task
       .finally(() => {
         if (queues.get(convId) === task) queues.delete(convId);
       })
       .catch(() => {});
-    // Required customer transcript writes finish before even background-mode calls return.
-    if (cfg.mode === 'async') await transcript;
+    // Caller interruption and required-hook timeouts propagate in either mode.
+    // Recoverable hosted failures have already selected a fresh analysis budget.
+    const transcriptResult = await transcript;
+    checkOperation(options);
     if (cfg.mode === 'sync') {
       try {
         await abortable(task, ctrl.signal);
       } catch (error) {
         if (
           config.failurePolicy === 'throw' ||
-          (error instanceof CaesuraError && error.kind === 'cancelled')
+          (error instanceof CaesuraError &&
+            (error.kind === 'cancelled' ||
+              (error.kind === 'timeout' &&
+                options.deadline !== undefined &&
+                Date.now() >= options.deadline)))
         )
           throw error;
       }
-      check(options.signal);
+      checkOperation(options);
     }
+    return transcriptResult !== true && transcriptResult.failure === 'required'
+      ? undefined
+      : cfg.persist && transcriptResult === true
+        ? ('requested' as const)
+        : ('disabled' as const);
   };
   const flush = async (id?: string) => {
     const work =
       id === undefined
-        ? [...queues.values()]
-        : [queues.get(id)].filter((p): p is Promise<void> => !!p);
+        ? [...queues.values(), ...transcriptQueues.values(), ...scopeWork]
+        : [queues.get(id), transcriptQueues.get(id)];
+    const children =
+      id === undefined
+        ? [...scopes].flatMap((ref) => {
+            const child = ref.deref();
+            if (!child) scopes.delete(ref);
+            return child ? [child] : [];
+          })
+        : [];
+    await Promise.all(children.map((child) => child.flush()));
     await Promise.allSettled(work);
     const selected = completions.filter(
       (c) => id === undefined || c.correlation.conversationId === id,
@@ -792,7 +1045,7 @@ export function createCaesuraEngine(
       completions.splice(completions.indexOf(completion), 1);
     return selected;
   };
-  const cancel = (id: string) => {
+  const cancel = (id: string | undefined) => {
     sessions
       .get(id)
       ?.abort(
@@ -810,11 +1063,12 @@ export function createCaesuraEngine(
         ),
       );
   };
-  const clear = async (id: string) => {
+  const clear = async (id: string | undefined) => {
     cancel(id);
     await locked(id, async () => {
       try {
-        await store.clear(id);
+        if (stateless) transient = emptyState();
+        else await store.clear(id!);
       } catch (error) {
         throw failure(error, 'store');
       }
@@ -823,13 +1077,35 @@ export function createCaesuraEngine(
   return {
     config: cfg,
     sdk,
+    createStatelessScope() {
+      if (closed || parent?.closed())
+        throw new CaesuraError('cancelled', 'CaesuraO: engine is shut down.');
+      const child = makeEngine(
+        {
+          ...config,
+          persist: false,
+          conversationId: undefined,
+          store: undefined,
+        },
+        integration,
+        scopeController.signal,
+        { closed: () => closed || !!parent?.closed(), collect, track },
+      );
+      const ref = new WeakRef(child);
+      scopes.add(ref);
+      scopeRegistry.register(child, ref);
+      return child;
+    },
     recordMessages,
     client,
     transport,
     store,
     getSignal,
     emitEvent,
-    observe,
+    observe: async (...args) => {
+      await observe(...args);
+    },
+    observeWithPersistence: observe,
     getState,
     updateState,
     flush,
@@ -912,12 +1188,17 @@ export function createCaesuraEngine(
       }
     },
     async clearAll() {
+      scopeController.abort(
+        new CaesuraError('cancelled', 'CaesuraO: engine reset.'),
+      );
+      scopeController = new AbortController();
       for (const id of new Set([...pending.keys(), ...sessions.keys()]))
         cancel(id);
       const existing = [...locks.values()];
       const reset = Promise.allSettled(existing).then(async () => {
         try {
-          await store.clearAll();
+          if (stateless) transient = emptyState();
+          else await store.clearAll();
         } catch (error) {
           throw failure(error, 'store');
         }
@@ -927,6 +1208,10 @@ export function createCaesuraEngine(
     },
     async shutdown(options = {}) {
       closed = true;
+      if (options.cancel !== false)
+        scopeController.abort(
+          new CaesuraError('cancelled', 'CaesuraO: engine shut down.'),
+        );
       if (options.cancel !== false)
         shutdownController.abort(
           new CaesuraError('cancelled', 'CaesuraO: engine shut down.'),
@@ -940,17 +1225,28 @@ export function createCaesuraEngine(
     async createConversation(options = {}, observation = {}) {
       observation = snapshotObservation(observation);
       options = copyProviderValue(options);
-      check(observation.signal);
-      if (closed)
+      checkOperation(observation);
+      if (closed || parent?.closed())
         throw new CaesuraError('cancelled', 'CaesuraO: engine is shut down.');
       const deadline = Math.min(
         observation.deadline ?? Infinity,
         Date.now() + cfg.timeoutMs,
       );
-      const signal = AbortSignal.any([
+      const callerSignal = AbortSignal.any([
         shutdownController.signal,
+        ...(statelessSignal ? [statelessSignal] : []),
         ...(observation.signal ? [observation.signal] : []),
-        AbortSignal.timeout(Math.ceil(Math.max(0, deadline - Date.now()))),
+        ...(observation.deadline !== undefined
+          ? [
+              AbortSignal.timeout(
+                Math.ceil(Math.max(0, observation.deadline - Date.now())),
+              ),
+            ]
+          : []),
+      ]);
+      const signal = AbortSignal.any([
+        callerSignal,
+        AbortSignal.timeout(Math.ceil(cfg.timeoutMs)),
       ]);
       const creation = (async () => {
         try {
@@ -964,10 +1260,26 @@ export function createCaesuraEngine(
           emitEvent({ type: 'conversation-created', conversationId: id, sdk });
           return id;
         } catch (error) {
-          throw failure(error, 'transport');
+          let e = failure(error, 'transport');
+          let interrupted = false;
+          try {
+            checkOperation({ ...observation, signal: callerSignal });
+          } catch (interruption) {
+            interrupted = true;
+            e = failure(interruption, 'transport');
+          }
+          reportError(e);
+          if (
+            config.failurePolicy === 'throw' ||
+            interrupted ||
+            !['transport', 'timeout'].includes(e.kind)
+          )
+            throw e;
+          return undefined;
         }
       })();
       creations.add(creation);
+      parent?.track(creation);
       try {
         return await creation;
       } finally {

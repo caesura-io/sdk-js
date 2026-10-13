@@ -128,11 +128,22 @@ it('creation gets metadata, provenance and deadlines, with no invented conversat
   ).rejects.toMatchObject({ kind: 'timeout' });
 });
 it('sends SDK-only headers on HTTP creation/analysis without serializing private context', async () => {
-  const fetcher = vi.fn(async (url: string) =>
-    Response.json(
+  const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+    if (url.includes('/conversation/messages?'))
+      return Response.json({
+        success: true,
+        conversationId: 'server:id',
+        nextMessageId: 1,
+      });
+    if (url.endsWith('/conversation/messages'))
+      return Response.json({
+        success: true,
+        ...JSON.parse(init.body as string),
+      });
+    return Response.json(
       url.endsWith('/conversation') ? { id: 'server:id' } : 'guidance',
-    ),
-  );
+    );
+  });
   vi.stubGlobal('fetch', fetcher);
   const engine = createCaesuraEngine(
     { apiKey: 'secret', mode: 'sync' },
@@ -156,8 +167,8 @@ it('sends SDK-only headers on HTTP creation/analysis without serializing private
     expect(headers.get('x-caesura-sdk-transport')).toBe('http');
     expect(headers.has('x-caesura-client')).toBe(false);
     expect(headers.has('x-caesura-version')).toBe(false);
-    expect(init.body).not.toContain('private');
-    expect(init.body).not.toContain('sdk');
+    expect(init.body ?? '').not.toContain('private');
+    expect(init.body ?? '').not.toContain('sdk');
   }
 });
 it.each(['sync', 'async'] as const)(
@@ -242,16 +253,18 @@ it('preserves FIFO and cancellation while required customer transcript writes ar
   });
   const first = engine.observe('id', dialogue, turn('1'));
   await vi.waitFor(() => expect(release).toBeTypeOf('function'));
-  await engine.observe('id', dialogue, turn('2'));
+  const second = engine.observe('id', dialogue, turn('2'));
   expect(analyzed).toEqual([]);
   release();
-  await first;
+  await Promise.all([first, second]);
   await engine.flush();
   expect(analyzed).toEqual(['1', '2']);
+  const previousRelease = release;
   const pending = engine.observe('id', dialogue, turn('1'));
-  await Promise.resolve();
+  await vi.waitFor(() => expect(release).not.toBe(previousRelease));
+  const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
   await engine.clear('id');
-  await expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+  await cancelled;
   release();
   await engine.flush();
   expect((await engine.getState('id')).recommendations).toEqual([]);

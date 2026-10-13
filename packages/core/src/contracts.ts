@@ -37,8 +37,10 @@ export interface SdkIdentity {
 }
 
 export interface Correlation {
+  /** Actual analysis persistence request; requested does not guarantee a completed backend write. */
+  persistence?: 'requested' | 'disabled';
   sdk?: SdkIdentity;
-  conversationId: string;
+  conversationId?: string;
   customerTurnId?: string;
   invocationId?: string;
   analysisId?: string;
@@ -57,7 +59,23 @@ export interface AnalysisContext extends Correlation {
   deadline: number;
   includeCreditUsage: boolean;
 }
+export interface TranscriptContext extends Correlation {
+  conversationId: string;
+  sdk: SdkIdentity;
+  signal: AbortSignal;
+  deadline: number;
+}
+export type HostedTranscriptMessage = Omit<TranscriptMessage, 'id'> & {
+  id: number;
+};
 export interface AnalysisTransport {
+  /** Read the next available per-conversation backend message ID. */
+  getNextMessageId?(context: TranscriptContext): Promise<number>;
+  /** Optional hosted dialogue persistence, independent from analysis. */
+  appendMessages?(
+    messages: readonly HostedTranscriptMessage[],
+    context: TranscriptContext,
+  ): Promise<void>;
   analyze(
     input: AnalyzeRequestBody,
     context: AnalysisContext,
@@ -67,7 +85,11 @@ export interface AnalysisTransport {
     context: CreationContext,
   ): Promise<string>;
 }
-/** Application-selected evidence; internal text is excluded, agent text remains background. */
+/**
+ * Application-selected evidence: origin takes precedence; otherwise speakerRole is
+ * user for customer dialogue, assistant for agent dialogue. Indices identify
+ * participants independently of role. Internal text is excluded; agent text is background.
+ */
 export interface DialogueMessage extends AnalyzeMessage {
   origin?: 'customer' | 'agent' | 'internal';
 }
@@ -128,6 +150,8 @@ export interface ObservationOptions {
   invocationId?: string;
 }
 export interface CaesuraCallOptions extends ObservationOptions {
+  /** Explicit ID-free invocation with isolated guidance state and no hosted writes. */
+  stateless?: boolean;
   conversationId?: string;
 }
 export interface AnalysisCompletion {

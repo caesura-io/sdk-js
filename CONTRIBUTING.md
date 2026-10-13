@@ -56,7 +56,7 @@ Provider calls are mocked. This check consumes CaesuraO credits and writes test 
 
 ## This release and examples
 
-`pnpm changeset status` currently plans core/OpenAI **0.4.0** and AI SDK **0.5.0**.
+Use `pnpm changeset status` to check the versions planned by pending changesets.
 Keep versions and changelogs unchanged in the implementation commit. After its PR
 passes validation and merges, Changesets opens the version PR. Review its three
 versions and workspace dependency updates, pass validation, then merge to publish.

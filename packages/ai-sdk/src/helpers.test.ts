@@ -57,7 +57,7 @@ describe('AI SDK helpers', () => {
         text: 'user message',
       });
       expect(collected[1]).toEqual({
-        speakerRole: 'user',
+        speakerRole: 'assistant',
         speakerName: 'Agent',
         speakerIndex: 0,
         text: 'assistant response',
@@ -402,7 +402,7 @@ it.each([0, 1, 8])(
       ),
     ).toEqual([
       {
-        speakerRole: 'user',
+        speakerRole: 'assistant',
         speakerName: 'Agent',
         speakerIndex,
         text: 'current',

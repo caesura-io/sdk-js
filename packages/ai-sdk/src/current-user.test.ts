@@ -18,8 +18,7 @@ describe.each(['sync', 'async'] as const)(
       'always sends currentUser=$agent',
       async ({ speakerNames, agent, customer }) => {
         const requests: AnalyzeRequestBody[] = [];
-        vi.stubGlobal(
-          'fetch',
+        stubAnalysisFetch(
           vi.fn(async (url, init) => {
             expect(url).toBe('https://api.caesurao.com/api/analyze');
             requests.push(JSON.parse(init.body));
@@ -35,7 +34,7 @@ describe.each(['sync', 'async'] as const)(
           speakerNames,
           inject: { skillPrompt: '' },
         });
-        for (const role of ['user', 'assistant'] as const) {
+        for (const role of ['user'] as const) {
           for (const name of [undefined, 'Per-message override']) {
             const prompt = [
               {
@@ -76,8 +75,30 @@ describe.each(['sync', 'async'] as const)(
             expect(result.prompt).toEqual(prompt);
           }
         }
-        expect(requests).toHaveLength(4);
+        expect(requests).toHaveLength(2);
       },
     );
   },
 );
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

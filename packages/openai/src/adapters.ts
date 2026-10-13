@@ -91,8 +91,10 @@ export function collectOpenAIMessages(
     .map((m) => {
       const text = getMessageText(m.content);
       return {
-        // Both participants are input to the analysis prompt.
-        speakerRole: 'user' as const,
+        // Retain participant role for orchestration; core converts dialogue to
+        // the backend analysis-prompt role only when building its request.
+        speakerRole:
+          m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
         speakerIndex:
           typeof m.speakerIndex === 'number'
             ? m.speakerIndex

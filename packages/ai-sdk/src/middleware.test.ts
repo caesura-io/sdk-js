@@ -8,7 +8,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
   beforeEach(() => {
     fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
+    stubAnalysisFetch(fetchMock);
   });
 
   afterEach(() => {
@@ -442,7 +442,7 @@ describe('middleware review regressions', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it.each(['generate', 'stream'] as const)(
-    'supports %s with conversation creation, dialogue filtering, and tool ordering',
+    'rejects %s tool continuation mislabeled as a customer turn',
     async (type) => {
       const fetcher = vi
         .fn()
@@ -450,7 +450,7 @@ describe('middleware review regressions', () => {
         .mockResolvedValueOnce(
           Response.json({ emoji: '😊', latest_speaker: 'Visitor' }),
         );
-      vi.stubGlobal('fetch', fetcher);
+      stubAnalysisFetch(fetcher);
       const events: any[] = [];
       const store = new MemoryCaesuraStore();
       const middleware = caesuraMiddleware({
@@ -494,39 +494,17 @@ describe('middleware review regressions', () => {
         },
       };
       const before = structuredClone(params);
-      const result = await middleware.transformParams!({
-        type,
-        params,
-        model: {},
-      });
+      await expect(
+        middleware.transformParams!({ type, params, model: {} }),
+      ).rejects.toMatchObject({ kind: 'configuration' });
       expect(params).toEqual(before);
-      expect(result.prompt[0].content).toBe(
-        'Original instructions\n\nPrivate guidance',
-      );
-      expect(result.prompt.slice(2, 4)).toEqual(prompt.slice(2));
-      expect(result.prompt[4].content[0].text).toContain('😊');
-      expect(events.find((e) => e.type === 'injected').blocks[0].index).toBe(4);
-      expect(JSON.parse(fetcher.mock.calls[1]![1].body).messages).toEqual([
-        {
-          speakerRole: 'user',
-          speakerName: 'Visitor',
-          speakerIndex: 1,
-          text: 'hello',
-        },
-        {
-          speakerRole: 'user',
-          speakerName: 'Support',
-          speakerIndex: 0,
-          text: 'checking',
-        },
-      ]);
-      expect(store.get(conversationId).turn).toBe(1);
+      expect(fetcher).toHaveBeenCalledTimes(1);
     },
   );
 
   it('tool-only input triggers neither creation nor analysis', async () => {
     const fetcher = vi.fn();
-    vi.stubGlobal('fetch', fetcher);
+    stubAnalysisFetch(fetcher);
     const middleware = caesuraMiddleware({
       conversationId: 'fixture-conversation',
       apiKey: 'key',
@@ -548,7 +526,7 @@ describe('middleware review regressions', () => {
   });
 
   it('survives creation and callback failures in the model path', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    stubAnalysisFetch(vi.fn().mockRejectedValue(new Error('offline')));
     const fail = () => {
       throw new Error('hook');
     };
@@ -569,3 +547,25 @@ describe('middleware review regressions', () => {
     ).resolves.toHaveProperty('prompt');
   });
 });
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}

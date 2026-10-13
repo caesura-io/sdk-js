@@ -8,7 +8,7 @@ Add conversation analysis and guidance to your agent:
 
 Start with an adapter README or the [runnable examples](https://github.com/caesura-io/examples-sdk-js).
 
-Every stateful call requires a `conversationId`. Create it explicitly and reuse it; an ID does not load history. Analysis persistence is enabled by default and saves the analyzed customer message plus analysis, not a full transcript.
+Every stateful call requires a `conversationId`. Create it explicitly and reuse it; an ID does not load history. With the HTTP transport, persistence is enabled by default: customer messages, completed agent replies and analyses are saved to the conversation.
 
 ## Guides
 

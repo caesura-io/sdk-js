@@ -5,13 +5,14 @@ import { createCaesura } from '../dist/index.js';
 async function consumer() {
   const original = new OpenAI({ apiKey: 'test' });
   const client = createCaesura(original, { apiKey: 'test' });
-  const conversationId: string = await client.createConversation();
+  const conversationId: string | undefined = await client.createConversation();
+  const invocation = conversationId ? { conversationId } : { stateless: true };
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'user', content: 'hello' },
   ];
   const chat = client.chat.completions.create(
     { model: 'test', messages },
-    { caesura: { conversationId }, signal: new AbortController().signal },
+    { caesura: invocation, signal: new AbortController().signal },
   );
   void (await chat).choices[0]?.message.content;
   void (await chat.withResponse()).data.choices;
@@ -24,7 +25,7 @@ async function consumer() {
   void (await chat).output;
   const chatStream = await client.chat.completions.create(
     { model: 'test', messages, stream: true },
-    { caesura: { conversationId } },
+    { caesura: invocation },
   );
   for await (const chunk of chatStream) {
     void chunk.choices[0]?.delta.content;
@@ -33,7 +34,7 @@ async function consumer() {
   }
   const response = client.responses.create(
     { model: 'test', input: 'hello', stream: false },
-    { caesura: { conversationId }, maxRetries: 1 },
+    { caesura: invocation, maxRetries: 1 },
   );
   void (await response).output_text;
   void (await response.withResponse()).data.output;
@@ -42,7 +43,7 @@ async function consumer() {
   void (await response).choices;
   const stream = await client.responses.create(
     { model: 'test', input: 'hello', stream: true },
-    { caesura: { conversationId } },
+    { caesura: invocation },
   );
   for await (const event of stream) {
     const type: string = event.type;
@@ -54,19 +55,19 @@ async function consumer() {
   const dynamicChat: ReturnType<OpenAI['chat']['completions']['create']> =
     client.chat.completions.create(
       { model: 'test', messages, stream: dynamicStream },
-      { caesura: { conversationId } },
+      { caesura: invocation },
     );
   const dynamicResponse: ReturnType<OpenAI['responses']['create']> =
     client.responses.create(
       { model: 'test', input: 'hello', stream: dynamicStream },
-      { caesura: { conversationId } },
+      { caesura: invocation },
     );
   void dynamicChat;
   void dynamicResponse;
   // @ts-expect-error Only wrapped create methods accept CaesuraO metadata.
   original.responses.create(
     { model: 'test', input: 'hello' },
-    { caesura: { conversationId } },
+    { caesura: invocation },
   );
   client.responses.create(
     { model: 'test', input: 'hello' },

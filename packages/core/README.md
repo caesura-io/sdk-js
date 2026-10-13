@@ -15,6 +15,8 @@ import {
 
 const engine = createCaesuraEngine({ mode: 'sync' }); // CAESURA_API_KEY
 const conversationId = await engine.createConversation({ name: 'Chat' });
+// This example requires hosted storage; alternatively use an explicit stateless scope.
+if (!conversationId) throw new Error('Conversation creation was unavailable.');
 await engine.observe(
   conversationId,
   [
@@ -35,7 +37,7 @@ console.log(blocks);
 await engine.shutdown();
 ```
 
-Reuse the returned conversation ID. Only genuine customer events trigger analysis; earlier agent dialogue can provide context. IDs do not load history, and analysis persistence does not archive a complete transcript.
+Reuse the returned conversation ID. Only genuine customer events trigger analysis; earlier agent dialogue can provide context. IDs do not load history, and HTTP persistence saves new customer messages and completed agent replies; supplied history is not imported.
 
 The core exports `CaesuraClient`, `createCaesuraEngine`, `MemoryCaesuraStore`, `createCreditMeter`, `createDebugLogger`, and the store/persistence types used by both adapters.
 

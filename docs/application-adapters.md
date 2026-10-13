@@ -10,23 +10,25 @@ When provider input includes RAG or application-generated user messages, supply 
 
 Without explicit selection, wrappers infer a turn only when the last input message is a user message. They cannot distinguish application-generated user text or identical single-message requests. Use explicit turn IDs and selection for these cases.
 
-Accepted turns run FIFO per conversation and advance cadence once. The SDK does not automatically retry failed turns. Reusing a failed ID does not retry it; reconcile its outcome before retrying with a new ID, and use backend idempotency where available.
+Accepted turns run FIFO per conversation and advance cadence once. The SDK does not automatically retry failed operations. Retry failed customer storage with the same turn ID. Hosted storage failure can still produce a successful stateless analysis; retrying that turn attempts storage again without repeating accepted analysis. Once a turn has been accepted for analysis, reusing its ID does not rerun analysis; reconcile its outcome before submitting a new turn. Retain durable SDK state to recognize message retries across restarts.
 
 ## Cancellation and background work
 
 `mode: 'sync'` waits for analysis before generation. `mode: 'async'` injects guidance available when the invocation starts and completes analysis in the background.
 
-- `engine.flush(conversationId?)` waits for accepted analysis work and returns completion records, including results and errors. Drain it regularly.
+- `engine.flush(conversationId?)` waits for accepted analysis and transcript work and returns analysis completion records, including results and errors. Standalone transcript failures are reported through `recordMessages()` and error hooks, not as analysis completions. Drain it regularly. ID-free stateless scopes are included by `flush()` without an ID.
 - `engine.clear(id)` and `clearAll()` cancel work before clearing guidance state; do not clear the store directly.
 - `engine.shutdown()` rejects new work and cancels accepted work. `shutdown({ cancel: false })` drains it instead.
 
-The engine is available as `client.caesura` (OpenAI) or `middleware.caesura` (AI SDK). Native provider signals and SDK lifecycle cancellation propagate to analysis and provider calls. Queue waiting counts against the analysis timeout. Cancellation is reported as `cancelled`, deadline expiry as `timeout`.
+The engine is available as `client.caesura` (OpenAI) or `middleware.caesura` (AI SDK). Native provider signals and SDK lifecycle cancellation propagate to analysis and provider calls. Storage and analysis have separate `timeoutMs` budgets. Analysis queue waiting after transcript storage counts against its budget; both stages respect the caller deadline. Cancellation is reported as `cancelled`, deadline expiry as `timeout`.
 
-Cancellation prevents late results from becoming active guidance. Shutdown cannot forcibly stop application code or consume an unread provider stream.
+Cancellation prevents late results from becoming active guidance. A noncooperative analysis may still complete paid work: completion hooks and a later parent `flush()` expose its result and usage, even after shutdown. Flush/shutdown do not wait indefinitely for it. Parent shutdown rejects new analysis in retained stateless scopes, including graceful shutdown; accepted stream finalization can still finish required writes. Shutdown cannot forcibly stop application code or consume an unread provider stream.
 
 ## Required persistence and failure handling
 
-`failurePolicy: 'continue'` permits generation after analysis or storage failure. Use `throw` with synchronous mode when analysis and required writes must succeed first. Background failures cannot reject an already returned provider call. Cancellation always rejects a pending foreground call.
+`failurePolicy: 'continue'` permits generation after analysis or storage failure. Use `throw` with synchronous mode when analysis and required writes must succeed first. Background failures cannot reject an already returned provider call. Cancellation always rejects a pending foreground call. Hosted transcript failures permit per-invocation stateless analysis; see [storage fallback](conversations.md#continuing-without-hosted-storage). Explicit application hooks are not bypassed by that fallback.
+
+Core `observe()` retains its `Promise<void>` return type. `observeWithPersistence()` additionally returns the invocation’s analysis persistence mode (`requested` or `disabled`), or `undefined` when no analysis persistence mode is selected. It does not assert that an analysis or backend write completed; use completion records for outcomes.
 
 | Hook                                                                     | Purpose                                                                                                                        |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -41,7 +43,9 @@ Required write failures are `CaesuraError` values with kind `store` and the orig
 
 A custom `CaesuraStore` implements `get`, `set`, `clear` and `clearAll`; methods may return values or promises. `get` returns an empty state for an unknown ID. The SDK awaits every `set` and supports detached/deserialized values. State contains guidance, processed turn IDs, cadence and injection tracking; deprecated `inFlight` is always false.
 
-One engine serializes work per conversation. Across engines or workers, the application must coordinate conversation ownership from state selection through analysis, injection and background completion. A shared database/Redis store alone does not provide that coordination. Restore both provider dialogue and SDK state when resuming; the conversation ID alone restores neither.
+One engine serializes work per conversation. Transcript hooks and uploads run in submission order. Queue waiting counts against the transcript timeout. Cancelling a queued write skips it without allowing later writes to overtake earlier work. `flush()` and graceful shutdown also await accepted transcript writes. An application hook that ignores cancellation may still finish its own write; cancellation cannot roll it back.
+
+Across engines or workers, the application must coordinate conversation ownership from state selection through analysis, injection and background completion. A shared database/Redis store alone does not provide that coordination. Restore both provider dialogue and SDK state when resuming; the conversation ID alone restores neither.
 
 ## Final provider audit
 

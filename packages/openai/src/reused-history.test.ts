@@ -63,8 +63,7 @@ describe.each(['sync', 'async'] as const)(
           const events: CaesuraEvent[] = [];
           let creations = 0;
           let release!: () => void;
-          vi.stubGlobal(
-            'fetch',
+          stubAnalysisFetch(
             vi.fn(async (url, init) => {
               if (url.endsWith('/api/conversation')) {
                 creations++;
@@ -93,7 +92,7 @@ describe.each(['sync', 'async'] as const)(
           let history: any[] = [];
           const dialogue: any[] = [];
           for (let turn = 1; turn <= 4; turn++) {
-            const current = format(turn % 2 ? 'user' : 'assistant', 'same');
+            const current = format('user', 'same');
             dialogue.push(current);
             history.push(current);
             const original = structuredClone(history);
@@ -138,8 +137,8 @@ describe.each(['sync', 'async'] as const)(
               dialogue.flatMap((_, i) => [
                 {
                   speakerRole: 'user',
-                  speakerName: i % 2 ? 'Support' : 'Visitor',
-                  speakerIndex: i % 2 ? 0 : 1,
+                  speakerName: 'Visitor',
+                  speakerIndex: 1,
                   text: 'same',
                 },
                 ...(i < turn - 1
@@ -166,8 +165,7 @@ it.each(['opposite role', 'named', 'explicit index', 'tool metadata'])(
   'keeps real dialogue matching guidance: %s',
   async (scenario) => {
     const requests: AnalyzeRequestBody[] = [];
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn(async (_url, init) => {
         requests.push(JSON.parse(init.body));
         return requests.length === 1
@@ -195,6 +193,13 @@ it.each(['opposite role', 'named', 'explicit index', 'tool metadata'])(
                 ...format('user', 'guidance'),
                 function_call: { name: 'tool', arguments: '{}' },
               };
+    if (scenario === 'opposite role') {
+      await expect(run([...first, current])).rejects.toMatchObject({
+        kind: 'configuration',
+      });
+      expect(requests).toHaveLength(1);
+      return;
+    }
     const result = await run([...first, current]);
     expect(requests[1]!.messages).toEqual([
       {
@@ -231,10 +236,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
     let now = 1000;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
     const store = new MemoryCaesuraStore();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => Response.json({ isSame: true })),
-    );
+    stubAnalysisFetch(vi.fn(async () => Response.json({ isSame: true })));
     store.add('fixture-conversation', [
       {
         id: 'r',
@@ -280,8 +282,7 @@ it.each(['keepLast=0', 'TTL'] as const)(
 it('recognizes older individual and merged renderings after retention changes', async () => {
   const store = new MemoryCaesuraStore();
   const requests: AnalyzeRequestBody[] = [];
-  vi.stubGlobal(
-    'fetch',
+  stubAnalysisFetch(
     vi.fn(async (_url, init) => {
       requests.push(JSON.parse(init.body));
       return requests.length < 3
@@ -325,8 +326,7 @@ it.each(['chat', 'responses', 'switch'])(
   'retains one copy of deduped guidance across cadence gaps in %s',
   async (api) => {
     const requests: AnalyzeRequestBody[] = [];
-    vi.stubGlobal(
-      'fetch',
+    stubAnalysisFetch(
       vi.fn(async (_url, init) => {
         requests.push(JSON.parse(init.body));
         return requests.length === 1
@@ -365,8 +365,7 @@ it.each(['chat', 'responses', 'switch'])(
 
 it('treats string Responses input as fresh dialogue even when it matches prior guidance', async () => {
   const requests: AnalyzeRequestBody[] = [];
-  vi.stubGlobal(
-    'fetch',
+  stubAnalysisFetch(
     vi.fn(async (_url, init) => {
       requests.push(JSON.parse(init.body));
       return requests.length === 1
@@ -395,8 +394,7 @@ it('treats string Responses input as fresh dialogue even when it matches prior g
 it('does not guess a new injection role for already-recorded guidance', async () => {
   const store = new MemoryCaesuraStore();
   const requests: AnalyzeRequestBody[] = [];
-  vi.stubGlobal(
-    'fetch',
+  stubAnalysisFetch(
     vi.fn(async (_url, init) => {
       requests.push(JSON.parse(init.body));
       return requests.length === 1
@@ -418,24 +416,24 @@ it('does not guess a new injection role for already-recorded guidance', async ()
   const result = await setup('chat', {
     ...cfg,
     inject: { ...cfg.inject, as: 'assistant' },
-  })([...history, current]);
+  })([...history, current, format('user', 'next')]);
   expect(result).toEqual([
     format('user', 'hello'),
     format('assistant', 'guidance'),
     current,
+    format('user', 'next'),
   ]);
   expect(requests[1]!.messages.at(-1)).toEqual({
     speakerRole: 'user',
-    speakerName: 'Agent',
-    speakerIndex: 0,
-    text: 'guidance',
+    speakerName: 'Customer',
+    speakerIndex: 1,
+    text: 'next',
   });
 });
 
 it('anchors new guidance after fresh string input matching an earlier injection', async () => {
   let calls = 0;
-  vi.stubGlobal(
-    'fetch',
+  stubAnalysisFetch(
     vi.fn(
       async () =>
         new Response(++calls === 1 ? 'guidance' : 'new advice', {
@@ -465,8 +463,7 @@ describe.each(['sync', 'async'] as const)(
       async (api) => {
         const store = new MemoryCaesuraStore();
         const requests: AnalyzeRequestBody[] = [];
-        vi.stubGlobal(
-          'fetch',
+        stubAnalysisFetch(
           vi.fn(async (_url, init) => {
             requests.push(JSON.parse(init.body));
             return requests.length === 1
@@ -499,7 +496,7 @@ describe.each(['sync', 'async'] as const)(
           ...format('assistant', 'guidance'),
           audio: { id: 'audio-real' },
         };
-        const history = [...emitted, current];
+        const history = [...emitted, current, format('user', 'next')];
         const original = structuredClone(history);
         const forwarded = await run(history);
         await run.flush();
@@ -520,6 +517,12 @@ describe.each(['sync', 'async'] as const)(
             speakerIndex: 0,
             text: 'guidance',
           },
+          {
+            speakerRole: 'user',
+            speakerName: 'Customer',
+            speakerIndex: 1,
+            text: 'next',
+          },
         ]);
         expect(forwarded).toEqual(original);
         expect(history).toEqual(original);
@@ -530,3 +533,25 @@ describe.each(['sync', 'async'] as const)(
     );
   },
 );
+
+// Analysis-only fixtures exclude the separately tested transcript endpoint.
+function stubAnalysisFetch(fetcher: typeof fetch) {
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) =>
+    url.includes('/conversation/messages?')
+      ? Promise.resolve(
+          Response.json({
+            success: true,
+            conversationId: new URL(url).searchParams.get('conversationId'),
+            nextMessageId: 1,
+          }),
+        )
+      : url.endsWith('/conversation/messages')
+        ? Promise.resolve(
+            Response.json({
+              success: true,
+              ...JSON.parse(init.body as string),
+            }),
+          )
+        : fetcher(url, init),
+  );
+}
