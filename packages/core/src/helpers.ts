@@ -1,3 +1,4 @@
+import type { DialogueMessage } from './contracts.js';
 import type { AnalyzeMessage } from './client.js';
 import type { CaesuraAnalysis, InjectConfig, SendConfig } from './types.js';
 import type { ConversationState, StoredRecommendation } from './store.js';
@@ -263,4 +264,29 @@ export function renderBlock(
       createdAtTurn: r.createdAtTurn,
     }))
     .filter((b) => b.text.trim() !== '');
+}
+
+/** Normalize trusted participant context without exposing selection metadata to HTTP. */
+export function normalizeDialogue(
+  messages: readonly DialogueMessage[],
+  names: { agent: string; customer: string },
+): AnalyzeMessage[] {
+  return messages
+    .filter(
+      (m) =>
+        m.origin !== 'internal' &&
+        (m.speakerRole === 'user' || m.speakerRole === 'assistant') &&
+        m.text.trim(),
+    )
+    .map((m) => {
+      const agent = m.origin
+        ? m.origin === 'agent'
+        : m.speakerRole === 'assistant' || m.speakerIndex === 0;
+      return {
+        speakerRole: agent ? 'assistant' : 'user',
+        speakerName: m.speakerName ?? (agent ? names.agent : names.customer),
+        speakerIndex: m.speakerIndex ?? (agent ? 0 : 1),
+        text: m.text,
+      };
+    });
 }

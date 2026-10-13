@@ -324,7 +324,10 @@ describe('AI SDK helpers', () => {
       ];
       const res = applySkillPrompt(prompt, 'Skill prompt');
       expect(res).toHaveLength(2);
-      expect(res[0]!.content).toBe('System instruction\n\nSkill prompt');
+      expect(res[0]!.content).toEqual([
+        { type: 'text', text: 'System instruction' },
+        { type: 'text', text: '\n\nSkill prompt' },
+      ]);
     });
 
     it('skips appending if skillPrompt is already present', () => {

@@ -7,7 +7,7 @@ export interface CaesuraOpenAIOptions extends Omit<CaesuraConfig, 'store'> {
 
 /** Per-call metadata consumed by the wrapper, never forwarded to OpenAI. */
 interface CaesuraRequestMetadata {
-  caesura?: { conversationId?: string };
+  caesura?: import('@caesura-io/core').CaesuraCallOptions;
 }
 
 /** Extend the three native create overloads without importing SDK internals.
@@ -27,6 +27,7 @@ type WithCaesuraOptions<Create> = Create extends {
   : never;
 
 export type CaesuraOpenAI = OpenAI & {
+  readonly caesura: import('@caesura-io/core').CaesuraEngine;
   createConversation: import('@caesura-io/core').CaesuraEngine['createConversation'];
   chat: OpenAI['chat'] & {
     completions: OpenAI['chat']['completions'] & {

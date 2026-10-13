@@ -1,3 +1,4 @@
+// Explicit event IDs isolate backend serialization; lifecycle tests cover genuine-turn fallback and continuations.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type OpenAI from 'openai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -67,6 +68,7 @@ describe.each(['sync', 'async'] as const)(
             responses: { create: responses },
           } as unknown as OpenAI,
           {
+            conversationId: 'fixture-conversation',
             apiKey: 'test',
             mode,
             persist: true,
@@ -98,7 +100,12 @@ describe.each(['sync', 'async'] as const)(
               ]
             : [{ role, content: text }];
           const before = structuredClone(input);
-          const opts = { caesura: { conversationId: id } };
+          const opts = {
+            caesura: {
+              conversationId: id,
+              turn: { id: String(turn), origin: 'customer' as const },
+            },
+          };
           if (useResponses)
             await client.responses.create({ model: 'test', input }, opts);
           else
@@ -119,11 +126,11 @@ describe.each(['sync', 'async'] as const)(
               : ['CONVERSATION ANALYSIS:\n' + JSON.stringify(originalAnalysis)],
           );
           if (mode === 'async') {
-            expect(store.get(id).inFlight).toBe(true);
+            await vi.waitFor(() => expect(releases).toHaveLength(turn + 1));
             expect(releases).toHaveLength(turn + 1);
             releases[turn]!();
           }
-          await vi.waitFor(() => expect(store.get(id).inFlight).toBe(false));
+          await client.caesura.flush();
           expect(store.get(id).recommendations.map((r) => r.analysis)).toEqual([
             originalAnalysis,
           ]);

@@ -52,17 +52,16 @@ it.each(['edited', 'trimmed'] as const)(
   },
 );
 
-it('snapshots direct engine inputs and anchors before awaiting automatic creation', async () => {
+it('snapshots direct engine inputs and anchors before awaiting analysis', async () => {
   const requests: AnalyzeRequestBody[] = [];
   let release!: () => void;
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url, init) => {
-      if (url.endsWith('/api/conversation')) {
+    vi.fn(async (_url, init) => {
+      if (!release) {
         await new Promise<void>((resolve) => {
           release = resolve;
         });
-        return Response.json({ id: 'backend' });
       }
       requests.push(JSON.parse(init.body));
       return Response.json(requests.length);
@@ -71,7 +70,6 @@ it('snapshots direct engine inputs and anchors before awaiting automatic creatio
   const engine = createCaesuraEngine({
     apiKey: 'test',
     mode: 'async',
-    autoCreateConversation: true,
   });
   const input = [message(7)];
   const snapshot = structuredClone(input);
@@ -79,18 +77,15 @@ it('snapshots direct engine inputs and anchors before awaiting automatic creatio
   input[0]!.text = 'changed';
   input[0]!.speakerIndex = 99;
   input.push(message(9));
+  await vi.waitFor(() => expect(release).toBeTypeOf('function'));
   release();
-  await vi.waitFor(() =>
-    expect(engine.store.get('local').inFlight).toBe(false),
-  );
+  await engine.flush();
   expect(requests[0]!.messages).toEqual(snapshot);
   expect(engine.store.get('local').recommendations[0]!.afterMessageAnchor).toBe(
     dialogueAnchors(snapshot)[0],
   );
   await engine.observe('local', [...snapshot, message(8)]);
-  await vi.waitFor(() =>
-    expect(engine.store.get('local').inFlight).toBe(false),
-  );
+  await engine.flush();
   expect(requests[1]!.messages).toEqual([
     snapshot[0],
     { speakerRole: 'assistant', speakerIndex: -1, text: '1' },

@@ -31,6 +31,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
     const store = new MemoryCaesuraStore();
     const middleware = caesuraMiddleware({
+      conversationId: 'fixture-conversation',
       baseUrl: 'http://localhost:3000',
       apiKey: 'test-key',
       mode: 'sync', // Use sync mode so analyze executes synchronously and we can assert immediately
@@ -75,6 +76,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
     const store = new MemoryCaesuraStore();
     const middleware = caesuraMiddleware({
+      conversationId: 'fixture-conversation',
       baseUrl: 'http://localhost:3000',
       apiKey: 'test-key',
       mode: 'sync',
@@ -115,6 +117,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
       const store = new MemoryCaesuraStore();
       const middleware = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         baseUrl: 'http://localhost:3000',
         apiKey: 'test-key',
         mode: 'sync',
@@ -168,6 +171,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
       // 1. no-messages reason
       const middlewareNoMsgs = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         baseUrl: 'http://localhost:3000',
         apiKey: 'test-key',
         mode: 'sync',
@@ -186,6 +190,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
       // 2. cadence-turns reason
       const middlewareTurns = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         baseUrl: 'http://localhost:3000',
         apiKey: 'test-key',
         mode: 'sync',
@@ -228,6 +233,7 @@ describe('caesuraMiddleware credit callback integration', () => {
       );
       // 3. cadence-seconds reason
       const middlewareSecs = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         baseUrl: 'http://localhost:3000',
         apiKey: 'test-key',
         mode: 'sync',
@@ -267,29 +273,28 @@ describe('caesuraMiddleware credit callback integration', () => {
         }),
       );
 
-      // 4. in-flight reason
-      const convState = store.get('conv-inflight');
-      convState.inFlight = true;
-      const middlewareInflight = caesuraMiddleware({
-        baseUrl: 'http://localhost:3000',
-        apiKey: 'test-key',
+      // Legacy persisted locks must not prevent work after restart.
+      store.get('conv-inflight').inFlight = true;
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => 'ok',
+      });
+      const resumed = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
+        apiKey: 'test',
         mode: 'sync',
         store,
         onEvent,
       });
-      await middlewareInflight.transformParams!({
+      await resumed.transformParams!({
         params: {
-          prompt: [{ role: 'user', content: 'test' }],
+          prompt: [{ role: 'user', content: 'new' }],
           providerOptions: { caesura: { conversationId: 'conv-inflight' } },
         },
       } as any);
-      expect(events[events.length - 1]).toEqual(
-        expect.objectContaining({
-          type: 'skipped',
-          conversationId: 'conv-inflight',
-          reason: 'in-flight',
-        }),
-      );
+      expect(store.get('conv-inflight').inFlight).toBe(false);
+      expect(store.get('conv-inflight').recommendations).toHaveLength(1);
     });
 
     it('emits deduped event on duplicate analysis response', async () => {
@@ -304,6 +309,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
       const store = new MemoryCaesuraStore();
       const middleware = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         baseUrl: 'http://localhost:3000',
         apiKey: 'test-key',
         mode: 'sync',
@@ -337,6 +343,7 @@ describe('caesuraMiddleware credit callback integration', () => {
       const onEvent = vi.fn((e) => events.push(e));
 
       const middleware = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         baseUrl: 'http://localhost:3000',
         apiKey: 'test-key',
         mode: 'sync',
@@ -374,6 +381,7 @@ describe('caesuraMiddleware credit callback integration', () => {
       const onError = vi.fn();
 
       const middleware = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         baseUrl: 'http://localhost:3000',
         apiKey: 'test-key',
         mode: 'sync',
@@ -390,7 +398,7 @@ describe('caesuraMiddleware credit callback integration', () => {
 
       expect(events.some((e) => e.type === 'error')).toBe(true);
       const errorEv = events.find((e) => e.type === 'error');
-      expect(errorEv.error.message).toBe('Network failure');
+      expect(errorEv.error.cause.message).toBe('Network failure');
       expect(onError).toHaveBeenCalled();
     });
 
@@ -407,6 +415,7 @@ describe('caesuraMiddleware credit callback integration', () => {
       const onError = vi.fn();
 
       const middleware = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         baseUrl: 'http://localhost:3000',
         apiKey: 'test-key',
         mode: 'sync',
@@ -445,6 +454,7 @@ describe('middleware review regressions', () => {
       const events: any[] = [];
       const store = new MemoryCaesuraStore();
       const middleware = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         apiKey: 'key',
         mode: 'sync',
         store,
@@ -476,7 +486,12 @@ describe('middleware review regressions', () => {
       ];
       const params = {
         prompt,
-        providerOptions: { caesura: { conversationId } },
+        providerOptions: {
+          caesura: {
+            conversationId,
+            turn: { id: 'first-customer', origin: 'customer' },
+          },
+        },
       };
       const before = structuredClone(params);
       const result = await middleware.transformParams!({
@@ -513,8 +528,8 @@ describe('middleware review regressions', () => {
     const fetcher = vi.fn();
     vi.stubGlobal('fetch', fetcher);
     const middleware = caesuraMiddleware({
+      conversationId: 'fixture-conversation',
       apiKey: 'key',
-      autoCreateConversation: true,
     });
     await middleware.transformParams!({
       type: 'generate',
@@ -538,8 +553,9 @@ describe('middleware review regressions', () => {
       throw new Error('hook');
     };
     const middleware = caesuraMiddleware({
+      conversationId: 'fixture-conversation',
       apiKey: 'key',
-      autoCreateConversation: true,
+
       mode: 'sync',
       onError: fail,
       onEvent: fail,

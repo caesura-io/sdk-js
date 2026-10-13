@@ -44,12 +44,15 @@ export function getMessageText(content: unknown): string {
 export function stripInjectedOpenAIMessages(
   input: unknown,
   known: ReadonlySet<string>,
+  protectedMessages: ReadonlySet<unknown> = new Set(),
 ): unknown {
   // String input is fresh dialogue, never an SDK-emitted message array.
   if (!Array.isArray(input)) return input;
   return input.filter(
     (m: MessageLike) =>
-      !m || !isInjectedMessage(m, getMessageText(m.content), known),
+      protectedMessages.has(m) ||
+      !m ||
+      !isInjectedMessage(m, getMessageText(m.content), known),
   );
 }
 
@@ -113,8 +116,8 @@ export function collectOpenAIMessages(
 }
 
 /**
- * Appends the skillPrompt to the system prompt or prepends a new system message.
- * For Responses API, we can either append it to instructions or modify messages if it's an array input.
+ * Append to the last system/developer message, unless any already contains the prompt.
+ * Responses callers pass instructions (null when absent) instead of modifying input.
  */
 export function applySkillPromptOpenAI(
   messagesOrInput: unknown,
@@ -127,7 +130,15 @@ export function applySkillPromptOpenAI(
 
   // If we are using Responses API and instructions are specified/used
   if (responsesInstructions !== undefined) {
-    if (responsesInstructions && responsesInstructions.includes(skillPrompt)) {
+    if (
+      responsesInstructions?.includes(skillPrompt) ||
+      (Array.isArray(messagesOrInput) &&
+        messagesOrInput.some(
+          (message: MessageLike) =>
+            (message?.role === 'system' || message?.role === 'developer') &&
+            getMessageText(message.content).includes(skillPrompt),
+        ))
+    ) {
       return { result: messagesOrInput, instructions: responsesInstructions };
     }
     const newInstructions = responsesInstructions
@@ -149,19 +160,20 @@ export function applySkillPromptOpenAI(
     return { result: messagesOrInput };
   }
 
-  // Find system or developer message
-  const sysIndex = rawItems.findIndex(
-    (m) => m && (m.role === 'system' || m.role === 'developer'),
-  );
+  // Search every eligible instruction before changing the last one.
+  let sysIndex = -1;
+  for (let i = 0; i < rawItems.length; i++) {
+    const message = rawItems[i];
+    if (message?.role !== 'system' && message?.role !== 'developer') continue;
+    if (getMessageText(message.content).includes(skillPrompt)) {
+      return { result: messagesOrInput };
+    }
+    sysIndex = i;
+  }
 
   if (sysIndex !== -1) {
     const sysMsg = rawItems[sysIndex]!;
     const currentContent = sysMsg.content;
-    const currentText = getMessageText(currentContent);
-
-    if (currentText.includes(skillPrompt)) {
-      return { result: messagesOrInput };
-    }
 
     let newContent: unknown;
     if (typeof currentContent === 'string') {
@@ -213,6 +225,10 @@ export function injectBlocksOpenAI(
   inject: Required<Omit<InjectConfig, 'skillPrompt'>>,
   speakerNames: Required<SpeakerNames>,
   injectedMessages: ReadonlySet<string> = new Set(),
+  selection?: {
+    positions: readonly number[];
+    messages: readonly AnalyzeMessage[];
+  },
 ): { result: unknown; indices: number[] } {
   messagesOrInput = stripInjectedOpenAIMessages(
     messagesOrInput,
@@ -258,12 +274,17 @@ export function injectBlocksOpenAI(
   const dialoguePositions: number[] = [];
   const hashToPositions = new Map<string, number[]>();
   for (let i = 0; i < rawItems.length; i++) {
-    const [message] = collectOpenAIMessages(
+    const selected = selection?.positions.indexOf(i);
+    if (selected === -1) continue;
+    const [collectedMessage] = collectOpenAIMessages(
       [rawItems[i]!],
       { maxMessages: 'all' },
       speakerNames,
       new Set(), // Guidance was already stripped; string input is fresh dialogue.
     );
+    const message = selection
+      ? selection.messages[selected!]
+      : collectedMessage;
     if (!message) continue;
     dialogue.push(message);
     dialoguePositions.push(i);

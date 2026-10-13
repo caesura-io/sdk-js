@@ -28,6 +28,7 @@ describe.each(['sync', 'async'] as const)(
         );
         const store = new MemoryCaesuraStore();
         const middleware = caesuraMiddleware({
+          conversationId: 'fixture-conversation',
           apiKey: 'test',
           mode,
           store,
@@ -49,10 +50,17 @@ describe.each(['sync', 'async'] as const)(
               params: {
                 prompt,
                 providerOptions: {
-                  caesura: { conversationId: 'existing-conversation' },
+                  caesura: {
+                    conversationId: 'existing-conversation',
+                    turn: {
+                      id: `${role}-${name}`,
+                      origin: 'customer' as const,
+                    },
+                  },
                 },
               },
             });
+            await middleware.caesura.flush();
             await vi.waitFor(() =>
               expect(store.get('existing-conversation').inFlight).toBe(false),
             );

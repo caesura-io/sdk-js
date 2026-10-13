@@ -1,3 +1,4 @@
+import type { Awaitable } from './contracts.js';
 import type { CaesuraAnalysis } from './types.js';
 
 /** A single buffered recommendation, keyed within a conversation. */
@@ -16,20 +17,31 @@ export interface StoredRecommendation {
   createdAtTurn: number;
 }
 
-/** Mutable per-conversation state held by the store. */
+/** Serializable per-conversation state; the engine always writes mutations explicitly. */
 export interface ConversationState {
   recommendations: StoredRecommendation[];
+  /** Accepted customer IDs, including skipped/failed work. No automatic paid retries. */
+  processedTurnIds?: string[];
+  /** Stable cadence number for each accepted event, including retries after reload. */
+  turnNumbers?: Record<string, number>;
+  /** Pending means outcome unknown after restart, never a persisted execution lock. */
+  turnOutcomes?: Record<
+    string,
+    {
+      status: 'pending' | 'completed' | 'skipped' | 'failed';
+      error?: { kind: import('./contracts.js').ErrorKind; message: string };
+    }
+  >;
   /** Previously emitted guidance, including older merged renderings. Cleared with the session. */
   injectedMessages?: { role: string; text: string }[];
-  /** Backend ID cached for automatic creation; removed with this state. */
-  backendConversationId?: string;
-  /** Increments on every engine observation for this conversation. */
+  /** Increments on each distinct accepted customer event. */
   turn: number;
   /** Turn index of the last backend query (for cadence.everyTurns). */
   lastQueryTurn: number;
   /** Wall-clock ms of the last backend query (for cadence.everySeconds). */
   lastQueryMs: number;
   /** Guards against overlapping async observe calls. */
+  /** @deprecated Runtime work belongs to the engine, never persisted as a lock. */
   inFlight: boolean;
   /** Wall-clock ms of last access, for eviction. */
   lastAccessMs: number;
@@ -41,14 +53,15 @@ export interface ConversationState {
  * unknown conversationId (create-on-read).
  */
 export interface CaesuraStore {
-  /** Returns (creating if needed) the mutable state for a conversation. */
-  get(conversationId: string): ConversationState;
+  /** Returns (creating if needed) state; detached values are supported. */
+  get(conversationId: string): Awaitable<ConversationState>;
+  set(conversationId: string, state: ConversationState): Awaitable<void>;
   /** Appends recommendations to a conversation's buffer. */
-  add(conversationId: string, recs: StoredRecommendation[]): void;
+  add?(conversationId: string, recs: StoredRecommendation[]): Awaitable<void>;
   /** Drops a single conversation's state. */
-  clear(conversationId: string): void;
+  clear(conversationId: string): Awaitable<void>;
   /** Drops all state. */
-  clearAll(): void;
+  clearAll(): Awaitable<void>;
 }
 
 export interface MemoryStoreOptions {
@@ -64,6 +77,15 @@ export interface MemoryStoreOptions {
  * store for multi-instance/serverless deployments.
  */
 export class MemoryCaesuraStore implements CaesuraStore {
+  private readonly pins = new Map<string, number>();
+  pin(id: string): void {
+    this.pins.set(id, (this.pins.get(id) ?? 0) + 1);
+  }
+  unpin(id: string): void {
+    const count = (this.pins.get(id) ?? 1) - 1;
+    if (count) this.pins.set(id, count);
+    else this.pins.delete(id);
+  }
   private readonly map = new Map<string, ConversationState>();
   private readonly maxConversations: number;
   private readonly maxIdleMs: number;
@@ -80,8 +102,8 @@ export class MemoryCaesuraStore implements CaesuraStore {
       s = {
         recommendations: [],
         turn: 0,
-        lastQueryTurn: Number.NEGATIVE_INFINITY,
-        lastQueryMs: Number.NEGATIVE_INFINITY,
+        lastQueryTurn: 0,
+        lastQueryMs: 0,
         inFlight: false,
         lastAccessMs: Date.now(),
       };
@@ -94,6 +116,10 @@ export class MemoryCaesuraStore implements CaesuraStore {
     }
     this.evictOverflow(conversationId);
     return s;
+  }
+
+  set(conversationId: string, state: ConversationState): void {
+    this.map.set(conversationId, state);
   }
 
   add(conversationId: string, recs: StoredRecommendation[]): void {
@@ -113,7 +139,7 @@ export class MemoryCaesuraStore implements CaesuraStore {
     if (this.maxIdleMs <= 0) return;
     const cutoff = Date.now() - this.maxIdleMs;
     for (const [id, s] of this.map) {
-      if (!s.inFlight && s.lastAccessMs < cutoff) this.map.delete(id);
+      if (!this.pins.has(id) && s.lastAccessMs < cutoff) this.map.delete(id);
     }
   }
 
@@ -121,7 +147,7 @@ export class MemoryCaesuraStore implements CaesuraStore {
     while (this.map.size > this.maxConversations) {
       // Map iteration order is insertion order; first eligible key is the LRU.
       const oldest = [...this.map].find(
-        ([id, state]) => id !== protectedId && !state.inFlight,
+        ([id]) => id !== protectedId && !this.pins.has(id),
       )?.[0];
       if (oldest === undefined) break;
       this.map.delete(oldest);

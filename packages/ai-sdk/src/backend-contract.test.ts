@@ -1,3 +1,4 @@
+// Explicit event IDs isolate backend serialization; lifecycle tests cover genuine-turn fallback and continuations.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AnalyzeRequestBody, SendConfig } from '@caesura-io/core';
 import { caesuraMiddleware } from './middleware.js';
@@ -89,6 +90,7 @@ describe.each(['generate', 'stream'] as const)(
         }),
       );
       const middleware = caesuraMiddleware({
+        conversationId: 'fixture-conversation',
         apiKey: 'test',
         mode: 'sync',
         speakerNames: { agent: 'Support', customer: 'Visitor' },
@@ -115,7 +117,10 @@ describe.each(['generate', 'stream'] as const)(
         const params = {
           prompt,
           providerOptions: {
-            caesura: { conversationId: 'backend-conversation' },
+            caesura: {
+              conversationId: 'backend-conversation',
+              turn: { id: String(includeOld), origin: 'customer' as const },
+            },
           },
         };
         const original = structuredClone(params);

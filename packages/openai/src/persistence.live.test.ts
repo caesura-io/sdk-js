@@ -24,6 +24,7 @@ it.runIf(process.env.CAESURA_LIVE_TEST === '1')(
         responses: { create: responses },
       } as unknown as OpenAI,
       {
+        conversationId: 'fixture-conversation',
         apiKey,
         baseUrl,
         store,
@@ -48,7 +49,12 @@ it.runIf(process.env.CAESURA_LIVE_TEST === '1')(
     const roles = ['user', 'assistant', 'user', 'assistant'] as const;
     const names = ['Customer', 'Agent', 'Customer', 'Agent'];
     for (const [turn, role] of roles.entries()) {
-      const options = { caesura: { conversationId } };
+      const options = {
+        caesura: {
+          conversationId,
+          turn: { id: String(turn), origin: 'customer' as const },
+        },
+      };
       if (turn % 2 === 0) {
         const input = [
           { role, content: [{ type: 'input_text' as const, text }] },
@@ -66,13 +72,11 @@ it.runIf(process.env.CAESURA_LIVE_TEST === '1')(
         );
         expect(chat.mock.calls.at(-1)![0].messages).toContainEqual(messages[0]);
       }
-      await vi.waitFor(
-        () => {
-          expect(errors).toEqual([]);
-          expect(store.get(conversationId).inFlight).toBe(false);
-        },
-        { timeout: 65000, interval: 100 },
+      const completed = await client.caesura.flush(conversationId);
+      expect(completed.every((record) => record.status === 'completed')).toBe(
+        true,
       );
+      expect(errors).toEqual([]);
       expect(requests[turn]!.messages.at(-1)).toEqual({
         speakerRole: 'user',
         speakerName: names[turn],
