@@ -126,7 +126,7 @@ export interface CaesuraConfig {
   /** API URL override. Defaults to https://api.caesurao.com; environment follows the account. */
   baseUrl?: string;
 
-  /** Call type / preset discriminator sent to the backend. */
+  /** One of your account's agent types, listed by GET /api/call-types?category=agent. Omit to use the default analysis. */
   callType?: string;
 
   /** 'async' (default) never blocks the model; 'sync' awaits inline. */
